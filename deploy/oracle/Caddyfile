@@ -1,0 +1,7 @@
+# DOMAIN は <IPアドレスのドットをハイフンにしたもの>.sslip.io (無料で使えるドメイン)。証明書は自動取得
+{$DOMAIN} {
+	request_body {
+		max_size 2GB
+	}
+	reverse_proxy app:10000
+}

@@ -1,0 +1,25 @@
+# Oracle Cloud (無料枠) の VM で StemScore を動かす構成: アプリ + Caddy (自動 HTTPS)
+services:
+  app:
+    build: ../..
+    restart: unless-stopped
+    environment:
+      - STEMSCORE_ACCESS_KEY=${STEMSCORE_ACCESS_KEY}
+      - STEMSCORE_KEEP_DAYS=14
+      - STEMSCORE_MEMBER_MAX_ACTIVE=2
+      - STEMSCORE_THREADS=4
+    volumes:
+      - /opt/stemscore-data:/var/data
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+volumes:
+  caddy_data:

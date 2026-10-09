@@ -1,0 +1,34 @@
+#!/bin/bash
+# Oracle Cloud の VM 作成時に「初期化スクリプト (cloud-init)」として貼り付けると、
+# StemScore を自動でセットアップする (Ubuntu 22.04 / 24.04、Arm/Ampere または x86)。
+# 進み具合は VM 上の /var/log/stemscore-setup.log に記録される。完了まで 20〜30 分。
+set -eux
+exec > /var/log/stemscore-setup.log 2>&1
+
+ADMIN_KEY="__ADMIN_KEY__"
+REPO="__REPO__"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y ca-certificates curl git iptables-persistent
+curl -fsSL https://get.docker.com | sh
+
+# Oracle の Ubuntu イメージは OS のファイアウォールで 80/443 を閉じているので開ける
+iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+netfilter-persistent save
+
+git clone --depth 1 "$REPO" /opt/stemscore
+mkdir -p /opt/stemscore-data
+IP=$(curl -fsS https://api.ipify.org)
+DOMAIN="${IP//./-}.sslip.io"
+cat > /opt/stemscore/deploy/oracle/.env <<ENV
+DOMAIN=$DOMAIN
+STEMSCORE_ACCESS_KEY=$ADMIN_KEY
+ENV
+chmod 600 /opt/stemscore/deploy/oracle/.env
+
+cd /opt/stemscore/deploy/oracle
+docker compose up -d --build
+echo "https://$DOMAIN/?key=$ADMIN_KEY" > /root/stemscore_url.txt
+echo "StemScore setup finished: https://$DOMAIN"
