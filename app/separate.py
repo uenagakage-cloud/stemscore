@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import types
 from pathlib import Path
 
 import numpy as np
@@ -80,50 +79,52 @@ def _get_model(name: str):
     return _cache[name]
 
 
-def _install_progress_hook(on_progress, n_models: int):
-    """demucs 内部の tqdm を差し替えてチャンク単位の進捗を受け取る。"""
-    import demucs.apply as dapply
+class StemWriter:
+    """分離結果をパートごとの WAV に少しずつ書き出す (曲全体をメモリに持たない)。
 
-    state = {"model": 0}
+    波形表示用のピークと音量 (RMS) も書きながら集計する。
+    """
 
-    class _Bar:
-        def __init__(self, iterable, *args, **kwargs):
-            self.items = list(iterable)
+    def __init__(self, out_dir: Path, names: list[str], sr: int, total: int, n_peaks: int = 1200):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.out_dir, self.names, self.sr = out_dir, names, sr
+        self.step = max(1, total // n_peaks)
+        self.n_peaks = n_peaks
+        self.files = {n: sf.SoundFile(str(out_dir / f"{n}.wav"), "w", sr, 2, "PCM_16") for n in names}
+        self.inst = sf.SoundFile(str(out_dir / "instrumental.wav"), "w", sr, 2, "PCM_16")
+        self.peaks = {n: np.zeros(n_peaks, dtype=np.float32) for n in names}
+        self.sq = {n: 0.0 for n in names}
+        self.pos = 0
 
-        def __iter__(self):
-            n = len(self.items)
-            for i, it in enumerate(self.items):
-                yield it
-                on_progress((state["model"] + (i + 1) / n) / n_models)
-            state["model"] = min(state["model"] + 1, n_models - 1)
+    def write(self, parts: dict[str, np.ndarray]):
+        """parts: {名前: (samples, 2)} の同じ長さのブロック。"""
+        n = len(next(iter(parts.values())))
+        idx = np.minimum((self.pos + np.arange(n)) // self.step, self.n_peaks - 1)
+        inst = np.zeros((n, 2), dtype=np.float32)
+        for name, blk in parts.items():
+            blk = np.clip(blk, -1, 1).astype(np.float32)
+            self.files[name].write(blk)
+            np.maximum.at(self.peaks[name], idx, np.abs(blk).max(axis=1))
+            self.sq[name] += float((blk.astype(np.float64) ** 2).sum())
+            if name != "vocals":
+                inst += blk
+        self.inst.write(np.clip(inst, -1, 1))
+        self.pos += n
 
-    dapply.tqdm = types.SimpleNamespace(tqdm=_Bar)
+    def close(self) -> dict:
+        for f in [*self.files.values(), self.inst]:
+            f.close()
+        total = max(1, self.pos * 2)
+        used = min(self.n_peaks, -(-self.pos // self.step))
+        return {n: {"file": f"{n}.wav", "peaks": [round(float(v), 3) for v in self.peaks[n][:used]],
+                    "rms": round(float(np.sqrt(self.sq[n] / total)), 5)} for n in self.names}
 
 
-def peaks(data: np.ndarray, n: int = 1200) -> list[float]:
-    """波形表示用のピーク列 (0〜1)。data: (samples,) または (samples, ch)。"""
-    mono = np.abs(data).max(axis=1) if data.ndim == 2 else np.abs(data)
-    if len(mono) == 0:
-        return []
-    step = max(1, len(mono) // n)
-    trimmed = mono[: step * (len(mono) // step)].reshape(-1, step).max(axis=1)
-    return [round(float(v), 3) for v in trimmed[:n]]
-
-
-def _write_stems(arrays: dict[str, np.ndarray], sr: int, out_dir: Path) -> dict:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stems = {}
-    instrumental = None
-    for name, arr in arrays.items():
-        path = out_dir / f"{name}.wav"
-        sf.write(str(path), np.clip(arr, -1, 1), sr, subtype="PCM_16")
-        rms = float(np.sqrt(np.mean(arr ** 2)))
-        stems[name] = {"file": path.name, "peaks": peaks(arr), "rms": round(rms, 5)}
-        if name != "vocals":
-            instrumental = arr if instrumental is None else instrumental + arr
-    if instrumental is not None:
-        sf.write(str(out_dir / "instrumental.wav"), np.clip(instrumental, -1, 1), sr, subtype="PCM_16")
-    return stems
+def _blocks(total: int, size: int, ctx: int):
+    """(書き出す区間の開始, 終了, 前後の余白込みの読み込み開始, 終了) を順に返す。"""
+    for s0 in range(0, total, size):
+        s1 = min(total, s0 + size)
+        yield s0, s1, max(0, s0 - ctx), min(total, s1 + ctx)
 
 
 def separate_simple(wav_path: Path, out_dir: Path, on_progress) -> dict:
@@ -136,72 +137,77 @@ def separate_simple(wav_path: Path, out_dir: Path, on_progress) -> dict:
     """
     import librosa
 
-    data, sr = sf.read(str(wav_path), dtype="float32", always_2d=True)
-    if data.shape[1] == 1:
-        data = np.repeat(data, 2, axis=1)
+    info = sf.info(str(wav_path))
+    sr, total = info.samplerate, info.frames
     n_fft, hop = 4096, 1024
-    out = {k: np.zeros_like(data) for k in ("vocals", "drums", "bass", "other")}
-    # メモリ節約のため 60 秒ごとに処理 (前後 1 秒重ねてクロスフェード)
-    block, pad = 60 * sr, sr
-    starts = list(range(0, len(data), block))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
     bass_w = np.clip((300 - freqs) / 100, 0, 1)[:, None]          # 200〜300Hz でなめらかに切替
     voc_band = (np.clip((freqs - 150) / 100, 0, 1) * np.clip((9000 - freqs) / 2000, 0, 1))[:, None]
-    for bi, s0 in enumerate(starts):
-        a, b = max(0, s0 - pad), min(len(data), s0 + block + pad)
-        seg = data[a:b]
-        L = librosa.stft(seg[:, 0], n_fft=n_fft, hop_length=hop)
-        R = librosa.stft(seg[:, 1], n_fft=n_fft, hop_length=hop)
-        mag = (np.abs(L) + np.abs(R)) / 2
-        H, P = librosa.decompose.hpss(mag, kernel_size=(17, 31), power=2.0, mask=True, margin=1.0)
-        # 左右の似ている度合い (1 = 中央定位)
-        center = 1 - np.abs(np.abs(L) - np.abs(R)) / (np.abs(L) + np.abs(R) + 1e-9)
-        center = center ** 4
-        masks = {
-            "drums": P,
-            "bass": H * bass_w,
-            "vocals": H * (1 - bass_w) * voc_band * center,
-        }
-        masks["other"] = np.clip(H - masks["bass"] - masks["vocals"], 0, 1)
-        lo, hi = s0 - a, s0 - a + min(block, len(data) - s0)
-        for name, m in masks.items():
-            for ch, X in enumerate((L, R)):
-                y = librosa.istft(X * m, hop_length=hop, length=len(seg))
-                out[name][s0:s0 + (hi - lo), ch] = y[lo:hi]
-        on_progress((bi + 1) / len(starts))
-    return _write_stems(out, sr, out_dir)
+    names = ["vocals", "drums", "bass", "other"]
+    writer = StemWriter(out_dir, names, sr, total)
+    blocks = list(_blocks(total, 30 * sr, sr))   # 30 秒ずつ、前後 1 秒の余白つき
+    with sf.SoundFile(str(wav_path)) as fh:
+        for bi, (s0, s1, a, b) in enumerate(blocks):
+            fh.seek(a)
+            seg = fh.read(b - a, dtype="float32", always_2d=True)
+            if seg.shape[1] == 1:
+                seg = np.repeat(seg, 2, axis=1)
+            L = librosa.stft(seg[:, 0], n_fft=n_fft, hop_length=hop)
+            R = librosa.stft(seg[:, 1], n_fft=n_fft, hop_length=hop)
+            mag = (np.abs(L) + np.abs(R)) / 2
+            H, P = librosa.decompose.hpss(mag, kernel_size=(17, 31), power=2.0, mask=True, margin=1.0)
+            # 左右の似ている度合い (1 = 中央定位)
+            center = (1 - np.abs(np.abs(L) - np.abs(R)) / (np.abs(L) + np.abs(R) + 1e-9)) ** 4
+            masks = {"drums": P, "bass": H * bass_w, "vocals": H * (1 - bass_w) * voc_band * center}
+            masks["other"] = np.clip(H - masks["bass"] - masks["vocals"], 0, 1)
+            out = {}
+            for name in names:
+                y = np.stack([librosa.istft(X * masks[name], hop_length=hop, length=len(seg)) for X in (L, R)], 1)
+                out[name] = y[s0 - a:s1 - a]
+            writer.write(out)
+            on_progress((bi + 1) / len(blocks))
+    return writer.close()
 
 
 def separate(wav_path: Path, out_dir: Path, model_name: str, on_progress, shifts: int = 1) -> dict:
+    """AI (Demucs) による分離。曲を 30 秒ずつ (前後に余白をつけて) 処理し、順に書き出すので
+    曲の長さに関係なくメモリ使用量が一定 (無料のクラウドなどメモリが少ない環境でも動く)。"""
     if model_name == "simple":
         return separate_simple(wav_path, out_dir, on_progress)
     import torch
     from demucs.apply import apply_model
 
     model = _get_model(model_name)
-    n_models = len(getattr(model, "models", [model]))
-    _install_progress_hook(on_progress, n_models)
-
-    data, sr = sf.read(str(wav_path), dtype="float32", always_2d=True)
+    info = sf.info(str(wav_path))
+    sr, total = info.samplerate, info.frames
     if sr != model.samplerate:
-        import librosa
-
-        data = librosa.resample(data.T, orig_sr=sr, target_sr=model.samplerate).T
-        sr = model.samplerate
-    wav = torch.from_numpy(data.T.copy())
-    if wav.shape[0] == 1:
-        wav = wav.repeat(2, 1)
-    ref = wav.mean(0)
-    mean, std = ref.mean(), ref.std() + 1e-8
-    wav = (wav - mean) / std
-
-    threads = max(1, (torch.get_num_threads() or 4))
+        raise ValueError(f"サンプリングレートが {model.samplerate}Hz ではありません")
+    threads = int(os.environ.get("STEMSCORE_THREADS") or 0) or max(1, torch.get_num_threads() or 4)
     torch.set_num_threads(threads)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    with torch.no_grad():
-        sources = apply_model(model, wav[None], device=device, shifts=shifts, split=True,
-                              overlap=0.25, progress=True)[0]
-    sources = sources * std + mean
 
-    return _write_stems({name: src.cpu().numpy().T for name, src in zip(model.sources, sources)},
-                        sr, out_dir)
+    # 曲全体の平均と標準偏差 (Demucs の入力の正規化に使う) を、少しずつ読みながら求める
+    s, s2, n = 0.0, 0.0, 0
+    with sf.SoundFile(str(wav_path)) as fh:
+        for blk in fh.blocks(blocksize=sr * 30, dtype="float32", always_2d=True):
+            m = blk.mean(axis=1).astype(np.float64)
+            s, s2, n = s + m.sum(), s2 + (m ** 2).sum(), n + len(m)
+    mean = s / max(1, n)
+    std = float(np.sqrt(max(s2 / max(1, n) - mean ** 2, 0))) + 1e-8
+
+    writer = StemWriter(out_dir, list(model.sources), sr, total)
+    blocks = list(_blocks(total, 30 * sr, 3 * sr))   # 30 秒ずつ、前後 3 秒の余白 (継ぎ目を自然にする)
+    with sf.SoundFile(str(wav_path)) as fh, torch.no_grad():
+        for bi, (s0, s1, a, b) in enumerate(blocks):
+            fh.seek(a)
+            seg = fh.read(b - a, dtype="float32", always_2d=True)
+            if seg.shape[1] == 1:
+                seg = np.repeat(seg, 2, axis=1)
+            x = (torch.from_numpy(seg.T.copy()) - mean) / std
+            out = apply_model(model, x[None], device=device, shifts=shifts, split=True,
+                              overlap=0.25, progress=False)[0]
+            out = (out * std + mean).cpu().numpy()          # (stems, 2, samples)
+            writer.write({name: out[k].T[s0 - a:s1 - a] for k, name in enumerate(model.sources)})
+            del x, out
+            on_progress((bi + 1) / len(blocks))
+    return writer.close()
