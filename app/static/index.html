@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#6c5ce7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="StemScore">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+<title>StemScore</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%237c6cff'/><path d='M12 22V8l12-3v14' stroke='white' stroke-width='2.5' fill='none'/><circle cx='9.5' cy='22' r='3' fill='white'/><circle cx='21.5' cy='19' r='3' fill='white'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">♪</span> StemScore <small>Stem separation & auto transcription</small></div>
+  <div class="top-actions">
+    <button class="ghost" id="connectBtn" title="スマホから使う" hidden>📱 スマホで開く</button>
+    <button class="ghost" id="themeBtn" title="テーマ切替">◐</button>
+    <button class="ghost" id="helpBtn" title="ショートカット">?</button>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- サイドバー: 新規ジョブ + 履歴 -->
+  <aside class="sidebar">
+    <section class="card" id="newCard">
+      <h2>新しい曲を解析</h2>
+      <div class="seg" id="srcSeg">
+        <button data-src="url" class="on">URL</button>
+        <button data-src="file">ファイル</button>
+        <button data-src="inbox" id="inboxTab" hidden>Drive</button>
+      </div>
+      <form id="jobForm">
+        <div id="urlBox">
+          <input type="url" id="urlInput" placeholder="YouTube / Spotify / Google Drive のURL" autocomplete="off">
+          <p class="hint">Spotify は曲名・アーティストを読み取り、YouTube から同じ曲を探して取得します。
+            Google Drive は共有設定を「リンクを知っている全員」にしたファイルのリンクを貼り付けてください。</p>
+        </div>
+        <div id="fileBox" hidden>
+          <label class="drop" id="drop">
+            <input type="file" id="fileInput" accept="audio/*,video/*">
+            <span id="dropText">ここに音声/動画ファイルをドロップ<br><small>mp3 / wav / flac / m4a / mp4 など</small></span>
+          </label>
+          <p class="hint small" id="uploadLimitHint" hidden></p>
+        </div>
+        <div id="inboxBox" hidden>
+          <p class="hint">Google ドライブの「曲」フォルダに入れたファイルを選べます（共有設定は不要）。</p>
+          <ul id="inboxList" class="inbox-list"></ul>
+          <button class="ghost small" type="button" id="inboxReload">↻ 再読み込み</button>
+        </div>
+
+        <label class="field">分離モデル
+          <select id="model">
+            <option value="htdemucs">4パート 標準（ボーカル/ドラム/ベース/その他）</option>
+            <option value="htdemucs_6s">6パート（＋ギター/ピアノ）</option>
+            <option value="htdemucs_ft">4パート 高品質（処理時間 約4倍）</option>
+            <option value="simple">簡易分離（AIモデル不要・オフライン／品質は低め）</option>
+          </select>
+        </label>
+
+        <details class="adv">
+          <summary>詳細設定</summary>
+          <label class="check"><input type="checkbox" id="transcribe" checked> 各パートの採譜（楽譜/MIDI 生成）</label>
+          <label class="field">採譜の感度 <output id="sensOut">0.50</output>
+            <input type="range" id="sensitivity" min="0" max="1" step="0.05" value="0.5">
+            <span class="range-labels"><span>控えめ</span><span>多めに拾う</span></span>
+          </label>
+          <label class="field">分離の精度
+            <select id="shifts">
+              <option value="1">標準</option>
+              <option value="2">高め（2倍の時間）</option>
+              <option value="4">最高（4倍の時間）</option>
+            </select>
+          </label>
+          <div class="field">処理する区間（秒・空欄で全体）
+            <div class="row2">
+              <input type="number" id="trimStart" min="0" step="1" placeholder="開始">
+              <input type="number" id="trimEnd" min="0" step="1" placeholder="終了">
+            </div>
+          </div>
+        </details>
+
+        <div id="uploadBox" hidden>
+          <div class="progress"><div id="upBar"></div></div>
+          <div class="prog-row"><span id="upText">アップロード中…</span></div>
+        </div>
+        <button type="submit" class="primary" id="submitBtn">分離と採譜を開始</button>
+        <p class="hint small">処理はサーバー（PC）で行われます。スマホは画面を閉じても大丈夫です。</p>
+        <p class="hint small">※ 自分が権利を持つ音源、または私的な練習・学習の範囲で利用してください。</p>
+      </form>
+    </section>
+
+    <section class="card" id="modelCard">
+      <details id="modelDetails">
+        <summary><h2 style="display:inline">分離モデルの追加</h2> <span id="modelSummary" class="hint small"></span></summary>
+        <div id="modelList" class="model-list"></div>
+        <p class="hint">この PC のネットワークからモデルの配布元に接続できない場合は、Google Drive 経由で取り込めます。</p>
+        <ol class="hint steps">
+          <li>Google ドライブの「StemScore_モデル取得.ipynb」を <b>Google Colaboratory</b> で開いて ▶ 実行</li>
+          <li>最後に表示されるリンクをすべてコピーして下に貼り付け</li>
+        </ol>
+        <textarea id="modelLinks" rows="4" placeholder="https://drive.google.com/file/d/..."></textarea>
+        <label class="hint small">または .th ファイルを直接選択: <input type="file" id="modelFiles" accept=".th" multiple></label>
+        <button class="primary" id="modelImportBtn" type="button">モデルを取り込む</button>
+        <pre id="modelLog" class="model-log" hidden></pre>
+      </details>
+    </section>
+
+    <section class="card grow" id="historyCard">
+      <h2>履歴</h2>
+      <ul id="jobList" class="job-list"></ul>
+    </section>
+  </aside>
+
+  <!-- メイン -->
+  <main id="main">
+    <div id="empty" class="empty">
+      <div class="empty-icon">🎚️</div>
+      <h1>曲をパートごとに分けて、楽譜にする</h1>
+      <ol>
+        <li>左で URL かファイルを指定して開始</li>
+        <li>ボーカル・ドラム・ベースなどに自動で分離</li>
+        <li>ミキサーで聴き比べ・ソロ/ミュート・スロー再生・区間ループ</li>
+        <li>パートごとの楽譜・ピアノロール・MIDI・コード進行を確認</li>
+      </ol>
+    </div>
+
+    <div id="detail" hidden>
+      <section class="card head">
+        <div class="title-row">
+          <div>
+            <h1 id="jobTitle"></h1>
+            <div class="chips" id="chips"></div>
+          </div>
+          <div class="head-actions">
+            <a class="btn" id="zipBtn">⬇ 一式をZIPで保存</a>
+            <button class="ghost danger" id="delBtn">削除</button>
+          </div>
+        </div>
+        <div id="progressBox" hidden>
+          <div class="progress"><div id="progBar"></div></div>
+          <div class="prog-row"><span id="progStage"></span><span id="progPct"></span>
+            <button class="ghost small" id="cancelBtn">中止</button>
+            <button class="ghost small" id="retryBtn" hidden>再実行</button></div>
+        </div>
+        <details class="log"><summary>処理ログ</summary><pre id="logBox"></pre></details>
+      </section>
+
+      <section class="card" id="playerCard" hidden>
+        <div class="transport">
+          <button class="round" id="playBtn" title="再生/一時停止 (Space)">▶</button>
+          <button class="ghost" id="stopBtn" title="先頭へ">⏮</button>
+          <span class="time" id="timeLbl">0:00.0 / 0:00</span>
+          <label class="mini">速度 <output id="rateOut">100%</output>
+            <input type="range" id="rate" min="0.5" max="1.5" step="0.05" value="1"></label>
+          <label class="mini">音量 <input type="range" id="master" min="0" max="1.5" step="0.01" value="1"></label>
+          <span class="ab"><button class="ghost" id="aBtn" title="現在位置をループ開始点に">A</button><button class="ghost" id="bBtn" title="現在位置をループ終了点に">B</button></span>
+          <button class="ghost toggle" id="loopBtn" title="ループ (L)。波形上を Shift+ドラッグで区間指定">⟲ ループ</button>
+          <button class="ghost toggle" id="clickBtn" title="メトロノーム (C)">♩ クリック</button>
+          <button class="ghost" id="karaokeBtn" title="ボーカルだけミュート">🎤 カラオケ</button>
+        </div>
+        <div class="chord-now">
+          <div><small>現在のコード</small><b id="chordNow">–</b></div>
+          <div class="next"><small>次</small><span id="chordNext">–</span></div>
+        </div>
+        <div class="timeline-wrap" id="timelineWrap">
+          <canvas id="chordLane" height="26"></canvas>
+          <div id="tracks"></div>
+        </div>
+        <p class="hint small">波形をタップで移動 / A・B ボタン（PCは Shift+ドラッグ）でループ区間を設定</p>
+      </section>
+
+      <section class="card" id="partsCard" hidden>
+        <div class="parts-head">
+          <div class="tabs" id="partTabs"></div>
+          <div class="seg" id="viewSeg">
+            <button data-view="score" class="on">楽譜</button>
+            <button data-view="roll">ピアノロール</button>
+          </div>
+        </div>
+        <div class="part-tools">
+          <div class="part-info" id="partInfo"></div>
+          <label class="mini">移調
+            <select id="transposePreset">
+              <option value="0">実音 (C)</option>
+              <option value="2">B♭管 (Tp/Cl/T.Sax)</option>
+              <option value="9">E♭管 (A.Sax)</option>
+              <option value="7">F管 (Hr)</option>
+              <option value="12">ギター記譜 (+1oct)</option>
+              <option value="custom">カスタム</option>
+            </select>
+            <span class="stepper"><button id="tDown">−</button><output id="tOut">0</output><button id="tUp">＋</button></span>
+          </label>
+          <label class="mini">音価
+            <select id="division"><option value="4">16分</option><option value="2">8分</option></select></label>
+          <label class="mini">音名
+            <select id="noteNames">
+              <option value="letter">C D E</option>
+              <option value="letter_oct">C4 D4（高さ付き）</option>
+              <option value="">表示しない</option>
+            </select></label>
+          <label class="check mini"><input type="checkbox" id="colorNotes" checked> 音ごとに色分け</label>
+          <label class="check mini"><input type="checkbox" id="chordSyms" checked> コード記号</label>
+          <label class="mini">表示 <input type="range" id="zoom" min="0.4" max="1.6" step="0.1" value="0.9"></label>
+          <label class="check mini"><input type="checkbox" id="monitor"> 採譜音を重ねて再生</label>
+        </div>
+        <div class="part-tools second">
+          <label class="mini">再採譜の感度 <input type="range" id="reSens" min="0" max="1" step="0.05" value="0.5"><output id="reSensOut">0.50</output></label>
+          <button class="ghost small" id="reBtn">このパートを再採譜</button>
+          <span class="spacer"></span>
+          <a class="btn small" id="xmlBtn">⬇ MusicXML</a>
+          <a class="btn small" id="midBtn">⬇ MIDI</a>
+          <button class="ghost small" id="printBtn">🖨 印刷 / PDF</button>
+        </div>
+        <details class="legend" id="legend">
+          <summary>楽譜の読み方</summary>
+          <div class="legend-body">
+            <p>音符の下の文字が<b>音の名前</b>です（C D E F G A B の順に高くなり、B の次はまた C）。♯は半音上、♭は半音下。同時に鳴る音は縦に並びます。</p>
+            <p>音符が<b>上にあるほど高い音</b>です。色は音の名前ごとに同じ色になります。</p>
+            <p>長さ: <b>𝅝</b> 4拍　<b>𝅗𝅥</b> 2拍　<b>♩</b> 1拍　<b>♪</b> 半拍　<b>𝅘𝅥𝅯</b> 1/4拍（旗や横棒が増えるほど短い）。点が付くと1.5倍。</p>
+            <p>ドラム譜: <b>K</b>=キック（バスドラム） <b>S</b>=スネア <b>H</b>=ハイハット <b>C</b>=シンバル <b>T</b>=タム</p>
+            <p>わかりにくいときは「ピアノロール」表示もおすすめです（横＝時間、縦＝音の高さ、四角の中に音名）。</p>
+          </div>
+        </details>
+        <div class="score-transport" id="scoreTransport">
+          <button class="round sm" id="scorePlay" title="再生/一時停止 (Space)">▶</button>
+          <span class="time" id="scoreTime">0:00</span>
+          <div class="seg" id="playMode" title="再生するパート">
+            <button data-mode="all" class="on">全パート</button>
+            <button data-mode="solo">このパートだけ</button>
+            <button data-mode="minus">このパートを消す</button>
+          </div>
+          <label class="check mini"><input type="checkbox" id="followScore" checked> 自動スクロール</label>
+        </div>
+        <div id="scoreBox" class="score-box"><div id="osmd"></div><div id="scoreMeasure" class="score-measure" hidden></div><div id="scoreLine" class="score-line" hidden></div><div id="scoreMsg" class="score-msg"></div></div>
+        <div id="rollBox" class="roll-box" hidden><canvas id="roll"></canvas></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- スマホ用: 下部のミニプレイヤーとタブ -->
+<div class="mini-player" id="miniPlayer" hidden>
+  <button class="round sm" id="miniPlay">▶</button>
+  <div class="mp-info"><div class="mp-title" id="miniTitle"></div><div class="mp-time" id="miniTime"></div></div>
+  <div class="mp-chord" id="miniChord">–</div>
+</div>
+<nav class="mobnav" id="mobnav">
+  <button data-tab="add"><span>＋</span>追加</button>
+  <button data-tab="list"><span>☰</span>履歴</button>
+  <button data-tab="song"><span>♪</span>曲</button>
+</nav>
+
+<dialog id="connectDlg">
+  <h3>📱 スマホで開く</h3>
+  <p class="hint">スマホをこの PC と<b>同じ Wi-Fi</b> につないで、カメラで QR コードを読み取ってください。重い処理はすべてこの PC で行います。</p>
+  <div id="qrBox" class="qr"></div>
+  <div id="connectUrls" class="urls"></div>
+  <p class="hint small">アクセスキー: <code id="connectKey"></code>（初回だけ必要。以後はスマホに保存されます）</p>
+  <p class="hint small" id="lanWarn" hidden>⚠ 現在は「この PC からのみ」モードで起動しています。start.bat から起動し直してください。</p>
+  <p class="hint small">つながらない場合: Windows のファイアウォールで Python の通信を許可しているか、Wi-Fi が端末同士の通信を禁止していないか（学校・公共 Wi-Fi に多い）を確認してください。</p>
+  <form method="dialog" class="row-btns"><button class="ghost" id="resetKeyBtn" type="button">キーを再発行</button><button class="primary">閉じる</button></form>
+</dialog>
+
+<dialog id="helpDlg">
+  <h3>キーボードショートカット</h3>
+  <table>
+    <tr><td><kbd>Space</kbd></td><td>再生 / 一時停止</td></tr>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>5秒戻る / 進む</td></tr>
+    <tr><td><kbd>L</kbd></td><td>ループ ON/OFF</td></tr>
+    <tr><td><kbd>C</kbd></td><td>メトロノーム ON/OFF</td></tr>
+    <tr><td><kbd>1</kbd>〜<kbd>6</kbd></td><td>トラックをソロ</td></tr>
+    <tr><td><kbd>0</kbd></td><td>ソロ解除</td></tr>
+    <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>速度 −5% / +5%</td></tr>
+  </table>
+  <form method="dialog"><button class="primary">閉じる</button></form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/vendor/opensheetmusicdisplay.min.js" defer></script>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

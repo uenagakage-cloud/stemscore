@@ -1,0 +1,23 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+numpy<2
+torch==2.5.1
+torchaudio==2.5.1
+demucs==4.0.1
+soundfile
+librosa>=0.10
+pretty_midi
+music21>=9
+onnxruntime
+mir_eval
+resampy<0.4.3
+scikit-learn
+scipy
+typing_extensions
+fastapi
+uvicorn[standard]
+python-multipart
+yt-dlp
+imageio-ffmpeg
+requests
+truststore
+qrcode

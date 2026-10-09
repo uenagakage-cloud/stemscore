@@ -1,0 +1,7 @@
+.venv/
+data/
+dist/
+.claude/
+**/__pycache__/
+tools/
+*.bat

@@ -1,0 +1,23 @@
+# Render の Blueprint (New + → Blueprint でこのリポジトリを選ぶと、この設定で作成される)
+services:
+  - type: web
+    name: stemscore
+    runtime: docker
+    # AI 分離には 2GB 以上のメモリが必要。free / starter (512MB) では動かない
+    plan: standard
+    region: singapore
+    healthCheckPath: /manifest.webmanifest
+    envVars:
+      # アクセスキー (自動生成)。Render の Environment 画面で確認し、
+      # https://<サービス名>.onrender.com/?key=<この値> を一度開くとブラウザに保存される
+      - key: STEMSCORE_ACCESS_KEY
+        generateValue: true
+      - key: STEMSCORE_CLOUD
+        value: "1"
+      - key: STEMSCORE_DATA
+        value: /var/data
+    # 処理結果 (履歴) を再起動後も残すためのディスク
+    disk:
+      name: stemscore-data
+      mountPath: /var/data
+      sizeGB: 10
