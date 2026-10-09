@@ -162,8 +162,10 @@ async def auth_middleware(request: Request, call_next):
             url = request.url.remove_query_params("key")
             target = url.path + (f"?{url.query}" if url.query else "")
             resp = RedirectResponse(target, status_code=303)
-            resp.set_cookie(COOKIE, q, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax",
-                            secure=request.url.scheme == "https")
+            https = request.url.scheme == "https"
+            # https (クラウド) では、Hugging Face のページ内の埋め込み表示でも Cookie が送られるよう None にする
+            resp.set_cookie(COOKIE, q, max_age=60 * 60 * 24 * 365, httponly=True,
+                            samesite="none" if https else "lax", secure=https)
             return resp
     else:
         user = user_for_key(request.cookies.get(COOKIE, ""))
