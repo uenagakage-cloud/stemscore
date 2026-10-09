@@ -292,6 +292,25 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
   #playMode { width: 100%; }
   #playMode button { flex: 1; }
 }
+/* 共有 (メンバー招待) */
+#connectDlg { max-width: 480px; width: calc(100% - 24px); }
+#connectDlg h4 { margin: 16px 0 6px; }
+.share-sec { border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.row-add { display: flex; gap: 8px; }
+.row-add input { flex: 1; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); color: var(--text); font-size: 16px; }
+.row-add .primary { width: auto; margin: 0; }
+.invite { margin: 10px 0; padding: 10px; border: 2px solid var(--accent); border-radius: 10px; text-align: center; }
+.invite svg { width: 180px; height: 180px; background: #fff; border-radius: 8px; padding: 4px; }
+.invite input { width: 100%; font-size: 12px; padding: 6px; margin-top: 6px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel-2); color: var(--text); }
+.member-list { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.member-list li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 8px; font-size: 13px; }
+.member-list li b { flex: 1; }
+.member-list li small { color: var(--muted); }
+.me-chip { font-size: 12px; color: var(--muted); }
+.owner-tag { font-size: 10px; padding: 0 6px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
 .legend { margin-top: 10px; font-size: 13px; background: var(--panel-2); border-radius: 8px; padding: 8px 12px; }
 .legend summary { cursor: pointer; font-weight: 600; }
 .legend-body p { margin: 6px 0; }

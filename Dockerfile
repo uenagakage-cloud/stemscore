@@ -21,5 +21,6 @@ RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs'); g
 
 COPY app ./app
 
-# Render は PORT 環境変数で待ち受けポートを指定する。処理キューを共有するため worker は 1 つ
-CMD ["sh", "-c", "uvicorn app.server:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --log-level warning"]
+# Render は PORT 環境変数で待ち受けポートを指定する。処理キューを共有するため worker は 1 つ。
+# 招待リンクに正しい https の URL を入れるため、Render のプロキシのヘッダーを信頼する
+CMD ["sh", "-c", "uvicorn app.server:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --proxy-headers --forwarded-allow-ips='*' --log-level warning"]

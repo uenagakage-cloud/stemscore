@@ -18,6 +18,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 _lock = threading.Lock()
 _queue: "queue.Queue[str]" = queue.Queue()
 _cancel: set[str] = set()
+_order: list[str] = []   # 順番待ちの並び (表示用)
 
 
 class Cancelled(Exception):
@@ -62,32 +63,56 @@ def log(jid: str, msg: str) -> None:
     save(job)
 
 
-def list_jobs() -> list[dict]:
+def queue_position(jid: str) -> int | None:
+    """順番待ちの何番目か (1 始まり)。処理中・待ちでない場合は None。"""
+    with _lock:
+        return _order.index(jid) + 1 if jid in _order else None
+
+
+def owner_of(job: dict) -> str:
+    return job.get("owner") or "admin"   # 共有機能より前に作った曲は管理者のもの
+
+
+def active_count(owner: str) -> int:
+    return sum(1 for j in list_jobs() if j["owner"] == owner and j["status"] in ("queued", "running"))
+
+
+def list_jobs(owner: str | None = None) -> list[dict]:
+    """owner を指定すると、その人の曲だけを返す。"""
     out = []
     for f in DATA.glob("*/job.json"):
         try:
             j = json.loads(f.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
+        if owner is not None and owner_of(j) != owner:
+            continue
         out.append({k: j.get(k) for k in ("id", "title", "status", "progress", "stage", "created",
-                                          "options")}
+                                          "options", "owner_name")}
+                   | {"owner": owner_of(j), "queue_pos": queue_position(j["id"])}
                    | {"key": (j.get("analysis") or {}).get("key", {}).get("name"),
                       "bpm": (j.get("analysis") or {}).get("bpm")})
     return sorted(out, key=lambda j: j["created"] or 0, reverse=True)
 
 
-def create(source: dict, options: dict, title: str, enqueue: bool = True) -> dict:
+def create(source: dict, options: dict, title: str, enqueue: bool = True,
+           owner: dict | None = None) -> dict:
     jid = uuid.uuid4().hex[:12]
+    owner = owner or {"id": "admin", "name": "管理者"}
     job = {"id": jid, "title": title, "source": source, "options": options, "status": "queued",
            "stage": "待機中", "progress": 0.0, "created": time.time(), "log": [], "stems": {},
-           "parts": {}, "analysis": None, "error": None}
+           "parts": {}, "analysis": None, "error": None,
+           "owner": owner["id"], "owner_name": owner["name"]}
     save(job)
     if enqueue:
-        _queue.put(jid)
+        globals()["enqueue"](jid)
     return job
 
 
 def enqueue(jid: str) -> None:
+    with _lock:
+        if jid not in _order:
+            _order.append(jid)
     _queue.put(jid)
 
 
@@ -268,6 +293,9 @@ def run(jid: str) -> None:
 def _worker():
     while True:
         jid = _queue.get()
+        with _lock:
+            if jid in _order:
+                _order.remove(jid)
         try:
             if job_dir(jid).exists() and jid not in _cancel:
                 run(jid)
@@ -287,5 +315,17 @@ def start_worker() -> None:
             j["status"] = "queued"
             j["stage"] = "待機中 (再開)"
             save(j)
-            _queue.put(j["id"])
+            enqueue(j["id"])
     threading.Thread(target=_worker, daemon=True).start()
+    if config.KEEP_DAYS:
+        threading.Thread(target=_cleanup_loop, daemon=True).start()
+
+
+def _cleanup_loop():
+    """KEEP_DAYS より古い曲を定期的に削除する。"""
+    while True:
+        limit = time.time() - config.KEEP_DAYS * 86400
+        for j in list_jobs():
+            if (j["created"] or 0) < limit and j["status"] not in ("queued", "running"):
+                delete(j["id"])
+        time.sleep(6 * 3600)

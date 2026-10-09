@@ -16,6 +16,11 @@ services:
         value: "1"
       - key: STEMSCORE_DATA
         value: /var/data
+      # 共有して使うときの設定: 古い曲を自動削除する日数 / メンバー 1 人が同時に処理できる曲数
+      - key: STEMSCORE_KEEP_DAYS
+        value: "14"
+      - key: STEMSCORE_MEMBER_MAX_ACTIVE
+        value: "2"
     # 処理結果 (履歴) を再起動後も残すためのディスク
     disk:
       name: stemscore-data

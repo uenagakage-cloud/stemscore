@@ -220,7 +220,9 @@ async function refreshList() {
   if (!S.jobs.length) { ul.innerHTML = `<li class="hint">まだありません</li>`; return; }
   ul.innerHTML = S.jobs.map((j) => {
     const busy = j.status === "running" || j.status === "queued";
-    const meta = j.status === "done" ? `${j.key ?? ""} · ${j.bpm ?? ""} BPM` : esc(j.stage || j.status);
+    const stage = j.status === "queued" && j.queue_pos ? `順番待ち（${j.queue_pos} 番目）` : (j.stage || j.status);
+    const meta = (j.status === "done" ? `${j.key ?? ""} · ${j.bpm ?? ""} BPM` : esc(stage))
+      + (S.me?.admin && j.owner !== "admin" ? ` <span class="owner-tag">${esc(j.owner_name || "メンバー")}</span>` : "");
     return `<li data-id="${j.id}" class="${S.job?.id === j.id ? "active" : ""}">
       <div class="t" title="${esc(j.title)}">${esc(j.title)}</div>
       <div class="m"><span class="dot ${j.status}"></span>${meta}</div>
@@ -279,7 +281,8 @@ function renderHead() {
   const busy = j.status === "running" || j.status === "queued";
   $("#progressBox").hidden = j.status === "done";
   $("#progBar").style.width = `${(j.progress * 100).toFixed(1)}%`;
-  $("#progStage").textContent = j.status === "error" ? `エラー: ${j.error}` : j.stage;
+  $("#progStage").textContent = j.status === "error" ? `エラー: ${j.error}`
+    : j.status === "queued" && j.queue_pos ? `順番待ち（${j.queue_pos} 番目）。前の曲が終わると自動で始まります` : j.stage;
   $("#progPct").textContent = busy ? `${(j.progress * 100).toFixed(0)}%` : "";
   $("#cancelBtn").hidden = !busy; $("#retryBtn").hidden = busy;
   const lb = $("#logBox"); const atBottom = lb.scrollTop + lb.clientHeight >= lb.scrollHeight - 4;
@@ -1010,8 +1013,59 @@ async function showConnect(data) {
   $("#lanWarn").hidden = data.lan;
 }
 $("#connectBtn").onclick = async () => {
-  try { await showConnect(await api("/api/connect")); $("#connectDlg").showModal(); }
-  catch (e) { toast(e.message); }
+  try {
+    const [conn] = await Promise.all([api("/api/connect"), loadMembers()]);
+    showConnect(conn);
+    $("#newInvite").hidden = true;
+    $("#connectDlg").showModal();
+  } catch (e) { toast(e.message); }
+};
+
+// ───────── メンバーの招待 (管理者のみ) ─────────
+async function loadMembers() {
+  const list = await api("/api/members");
+  $("#memberList").innerHTML = list.length ? list.map((m) => `<li data-id="${esc(m.id)}">
+      <b>${esc(m.name)}</b><small>${m.songs} 曲</small>
+      <button class="ghost small" data-act="show">リンク</button>
+      <button class="ghost small danger" data-act="del">取り消し</button></li>`).join("")
+    : `<li class="hint">まだ誰も招待していません</li>`;
+  $("#memberList").querySelectorAll("li[data-id]").forEach((li) => {
+    const m = list.find((x) => x.id === li.dataset.id);
+    li.querySelector('[data-act="show"]').onclick = () => showInvite(m);
+    li.querySelector('[data-act="del"]').onclick = async () => {
+      if (!confirm(`${m.name} さんの招待を取り消しますか？（その人は StemScore を開けなくなります。処理済みの曲はあなたの履歴に残ります）`)) return;
+      await api(`/api/members/${m.id}`, { method: "DELETE" });
+      $("#newInvite").hidden = true;
+      loadMembers();
+    };
+  });
+}
+function showInvite(m) {
+  const box = $("#newInvite");
+  box.innerHTML = m.url ? `<div><b>${esc(m.name)}</b> さんの招待リンク</div>${m.qr || ""}
+    <input readonly value="${esc(m.url)}"><div class="row-btns" style="justify-content:center;margin-top:8px">
+    <button class="ghost small" type="button" id="copyInvite">リンクをコピー</button>
+    ${navigator.share ? '<button class="ghost small" type="button" id="shareInvite">送る…</button>' : ""}</div>
+    <p class="hint small">このリンクを開くだけで使えるようになります。他の人には転送しないよう伝えてください。</p>`
+    : `<p class="hint">ネットワークが見つからないため、リンクを作れませんでした</p>`;
+  box.hidden = false;
+  box.querySelector("#copyInvite")?.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(m.url); toast("コピーしました"); }
+    catch { box.querySelector("input").select(); toast("選択したのでコピーしてください"); }
+  });
+  box.querySelector("#shareInvite")?.addEventListener("click", () =>
+    navigator.share({ title: "StemScore の招待", text: `${m.name} さん用の StemScore のリンクです`, url: m.url }).catch(() => {}));
+}
+$("#addMemberBtn").onclick = async () => {
+  const name = $("#memberName").value.trim();
+  if (!name) return toast("名前を入れてください");
+  const fd = new FormData(); fd.append("name", name);
+  try {
+    const m = await api("/api/members", { method: "POST", body: fd });
+    $("#memberName").value = "";
+    showInvite(m);
+    loadMembers();
+  } catch (e) { toast(e.message); }
 };
 $("#resetKeyBtn").onclick = async () => {
   if (!confirm("キーを再発行すると、登録済みのスマホも再度 QR の読み取りが必要になります。")) return;
@@ -1024,7 +1078,12 @@ $("#resetKeyBtn").onclick = async () => {
   $("#noteNames").value = ["letter", "letter_oct", ""].includes(nn) ? nn : "letter";
   $("#colorNotes").checked = store.get("colorNotes", true);
   setTab("add");
-  fetch("/api/connect").then((r) => { $("#connectBtn").hidden = !r.ok; }).catch(() => {});
+  api("/api/me").then((me) => {
+    S.me = me;
+    $("#connectBtn").hidden = !me.admin;
+    $("#modelCard").hidden = !me.admin;   // モデルの追加は管理者だけ
+    if (!me.admin) { $("#meChip").hidden = false; $("#meChip").textContent = `${me.name} さん`; }
+  }).catch(() => {});
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   refreshModels();
   api("/api/config").then((cfg) => {

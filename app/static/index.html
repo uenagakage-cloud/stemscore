@@ -18,7 +18,8 @@
 <header class="topbar">
   <div class="brand"><span class="logo">♪</span> StemScore <small>Stem separation & auto transcription</small></div>
   <div class="top-actions">
-    <button class="ghost" id="connectBtn" title="スマホから使う" hidden>📱 スマホで開く</button>
+    <button class="ghost" id="connectBtn" title="スマホで開く・他の人を招待" hidden>👥 共有</button>
+    <span class="me-chip" id="meChip" hidden></span>
     <button class="ghost" id="themeBtn" title="テーマ切替">◐</button>
     <button class="ghost" id="helpBtn" title="ショートカット">?</button>
   </div>
@@ -256,11 +257,21 @@
 </nav>
 
 <dialog id="connectDlg">
-  <h3>📱 スマホで開く</h3>
-  <p class="hint">スマホをこの PC と<b>同じ Wi-Fi</b> につないで、カメラで QR コードを読み取ってください。重い処理はすべてこの PC で行います。</p>
+  <h3>👥 共有</h3>
+  <section class="share-sec">
+    <h4>他の人を招待する</h4>
+    <p class="hint">名前を入れて「招待」を押すと、その人専用のリンクと QR コードができます。招待された人は<b>自分の曲だけ</b>が見えます（あなたは全員の曲を見られます）。</p>
+    <div class="row-add"><input id="memberName" placeholder="名前（例: たろう）" maxlength="30"><button class="primary" id="addMemberBtn" type="button">招待</button></div>
+    <div id="newInvite" class="invite" hidden></div>
+    <ul id="memberList" class="member-list"></ul>
+    <p class="hint small">※ 共有する相手にも、著作権のある音源は私的な練習・学習の範囲で使うよう伝えてください。</p>
+  </section>
+  <h4>📱 自分のスマホで開く</h4>
+  <p class="hint" id="connectHint">スマホをこの PC と<b>同じ Wi-Fi</b> につないで、カメラで QR コードを読み取ってください。重い処理はすべてこの PC で行います。</p>
   <div id="qrBox" class="qr"></div>
   <div id="connectUrls" class="urls"></div>
   <p class="hint small">アクセスキー: <code id="connectKey"></code>（初回だけ必要。以後はスマホに保存されます）</p>
+  <p class="hint small">⚠ これは<b>管理者用</b>のリンクです。他の人には上の「招待」で作ったリンクを渡してください。</p>
   <p class="hint small" id="lanWarn" hidden>⚠ 現在は「この PC からのみ」モードで起動しています。start.bat から起動し直してください。</p>
   <p class="hint small">つながらない場合: Windows のファイアウォールで Python の通信を許可しているか、Wi-Fi が端末同士の通信を禁止していないか（学校・公共 Wi-Fi に多い）を確認してください。</p>
   <form method="dialog" class="row-btns"><button class="ghost" id="resetKeyBtn" type="button">キーを再発行</button><button class="primary">閉じる</button></form>

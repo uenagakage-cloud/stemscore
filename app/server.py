@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 import json
 import re
 import threading
@@ -82,23 +83,83 @@ def service_worker():
     return Response(js, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
 
+def _require_admin():
+    if not remote.current_user()["admin"]:
+        raise HTTPException(403, "管理者だけが使える機能です")
+
+
+def _base_urls(request: Request) -> list[str]:
+    """他の端末から開くときの URL。クラウドならアクセス中の URL、PC なら同じ Wi-Fi 用の IP。"""
+    from . import config
+    if config.CLOUD:
+        return [str(request.base_url).rstrip("/")]
+    return [f"http://{ip}:{PORT}" for ip in remote.lan_ips()]
+
+
+def _invite(base: str, key: str) -> dict:
+    url = f"{base}/?key={key}"
+    return {"url": url, "qr": remote.qr_svg(url)}
+
+
+@app.get("/api/me")
+def me():
+    u = remote.current_user()
+    return {"name": u["name"], "admin": u["admin"]}
+
+
 @app.get("/api/connect")
 def connect_info(request: Request):
-    """この PC の画面にだけ、スマホ接続用の URL と QR コードを返す。"""
-    if not remote.is_local(request):
-        raise HTTPException(403)
+    """管理者用: 自分のスマホで開くための URL と QR コード。"""
+    _require_admin()
     key = remote.access_key()
-    urls = [f"http://{ip}:{PORT}/?key={key}" for ip in remote.lan_ips()]
+    bases = _base_urls(request)
+    urls = [f"{b}/?key={key}" for b in bases]
     return {"key": key, "urls": urls, "qr": remote.qr_svg(urls[0]) if urls else None,
-            "lan": getattr(app.state, "lan", False)}
+            "lan": getattr(app.state, "lan", False) or _is_cloud()}
+
+
+def _is_cloud() -> bool:
+    from . import config
+    return config.CLOUD
 
 
 @app.post("/api/connect/reset")
 def connect_reset(request: Request):
-    if not remote.is_local(request):
-        raise HTTPException(403)
+    _require_admin()
+    if os.environ.get("STEMSCORE_ACCESS_KEY"):
+        raise HTTPException(400, "クラウドでは管理者キーを Render の Environment で変更してください")
     remote.reset_key()
     return connect_info(request)
+
+
+@app.get("/api/members")
+def members(request: Request):
+    """管理者用: 招待したメンバーの一覧 (招待リンクつき)。"""
+    _require_admin()
+    bases = _base_urls(request)
+    out = []
+    for m in remote.list_members():
+        n = len(jobs.list_jobs(owner=m["id"]))
+        out.append({"id": m["id"], "name": m["name"], "created": m["created"], "songs": n,
+                    **(_invite(bases[0], m["key"]) if bases else {"url": None, "qr": None})})
+    return out
+
+
+@app.post("/api/members")
+def add_member(request: Request, name: str = Form(...)):
+    _require_admin()
+    m = remote.add_member(name)
+    bases = _base_urls(request)
+    return {"id": m["id"], "name": m["name"], **(_invite(bases[0], m["key"]) if bases else {})}
+
+
+@app.delete("/api/members/{mid}")
+def remove_member(mid: str):
+    """招待を取り消す (その人はアクセスできなくなる。処理済みの曲は管理者の履歴に残る)。"""
+    _require_admin()
+    if not remote.remove_member(mid):
+        raise HTTPException(404)
+    return {"ok": True}
 
 
 @app.get("/api/config")
@@ -159,6 +220,7 @@ async def import_models(links: str = Form(""), files: list[UploadFile] | None = 
     """Drive の共有リンク (複数可) または .th ファイルのアップロードでモデルを取り込む。"""
     from .source import DRIVE_RE
 
+    _require_admin()
     if _import_state["running"]:
         raise HTTPException(409, "取り込み中です")
     items = []
@@ -194,8 +256,11 @@ def _job_or_404(jid: str) -> dict:
     if not re.fullmatch(r"[0-9a-f]{12}", jid):
         raise HTTPException(404)
     job = jobs.load(jid)
-    if not job:
+    u = remote.current_user()
+    # 他のメンバーの曲は見えない (存在しないものとして扱う)
+    if not job or (not u["admin"] and jobs.owner_of(job) != u["id"]):
         raise HTTPException(404, "ジョブが見つかりません")
+    job["queue_pos"] = jobs.queue_position(jid)
     return job
 
 
@@ -213,6 +278,11 @@ async def create_job(
 ):
     if model not in MODELS:
         raise HTTPException(400, "不明なモデルです")
+    from . import config
+    user = remote.current_user()
+    if not user["admin"] and jobs.active_count(user["id"]) >= config.MEMBER_MAX_ACTIVE:
+        raise HTTPException(429, f"同時に処理できるのは {config.MEMBER_MAX_ACTIVE} 曲までです。"
+                                 "終わってから追加してください")
     options = {"model": model, "transcribe": transcribe, "sensitivity": min(1, max(0, sensitivity)),
                "shifts": min(5, max(1, shifts)), "start": start or None, "end": end or None}
     if file is not None and file.filename:
@@ -220,7 +290,7 @@ async def create_job(
         if ext not in AUDIO_EXT:
             raise HTTPException(400, f"対応していない形式です: {ext}")
         job = jobs.create({"type": "file", "file": "upload" + ext, "name": file.filename}, options,
-                          Path(file.filename).stem, enqueue=False)
+                          Path(file.filename).stem, enqueue=False, owner=user)
         # 書き込みが終わってからキューに入れる
         await _write_upload(job, file)
         jobs.enqueue(job["id"])
@@ -230,11 +300,11 @@ async def create_job(
         f = (config.INBOX / inbox) if config.INBOX else None
         if f is None or f.parent != config.INBOX or not f.is_file() or f.suffix.lower() not in AUDIO_EXT:
             raise HTTPException(404, "フォルダにそのファイルがありません")
-        return jobs.create({"type": "inbox", "name": f.name}, options, f.stem)
+        return jobs.create({"type": "inbox", "name": f.name}, options, f.stem, owner=user)
     url = url.strip()
     if not re.match(r"^https?://", url):
         raise HTTPException(400, "URL かファイルを指定してください")
-    return jobs.create({"type": "url", "url": url}, options, url)
+    return jobs.create({"type": "url", "url": url}, options, url, owner=user)
 
 
 async def _write_upload(job: dict, file: UploadFile) -> dict:
@@ -247,7 +317,8 @@ async def _write_upload(job: dict, file: UploadFile) -> dict:
 
 @app.get("/api/jobs")
 def list_jobs():
-    return jobs.list_jobs()
+    u = remote.current_user()
+    return jobs.list_jobs(owner=None if u["admin"] else u["id"])
 
 
 @app.get("/api/jobs/{jid}")
