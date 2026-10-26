@@ -229,3 +229,23 @@ def pitch_shift(src: Path, dst: Path, semitones: int) -> None:
     if proc.returncode != 0:
         raise SourceError(f"キーの変更に失敗しました: {proc.stderr.strip()[-300:]}")
     tmp.replace(dst)
+
+
+def ensure_ffmpeg_on_path() -> None:
+    """`ffmpeg` という名前のコマンドを必要とするライブラリ (audio-separator など) のために、
+    imageio-ffmpeg 同梱の ffmpeg を `ffmpeg` という名前で PATH に追加する。"""
+    import os
+    import shutil
+
+    if shutil.which("ffmpeg"):
+        return
+    bindir = Path.home() / ".cache" / "stemscore" / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    exe = bindir / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if not exe.exists():
+        try:
+            os.link(FFMPEG, exe)          # 同じドライブならハードリンク (容量を使わない)
+        except OSError:
+            shutil.copy2(FFMPEG, exe)
+        exe.chmod(0o755)
+    os.environ["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")

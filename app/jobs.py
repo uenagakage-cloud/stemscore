@@ -176,16 +176,17 @@ def transcribe_part(jid: str, part: str, sensitivity: float) -> dict:
     return info
 
 
-def _split_vocals(jid: str, lo: float, hi: float) -> None:
+def _split_vocals(jid: str, lo: float, hi: float, quality: str = "standard") -> None:
     """メインボーカルとコーラスを分け、カラオケ音源を作る。"""
     from . import separate, source
 
     d = job_dir(jid)
     update(jid, stage="メインボーカルとコーラスを分離中", progress=lo)
-    log(jid, f"メインボーカルの分離を開始 ({separate.KARAOKE_MODEL}) ※初回はモデルをダウンロードします")
+    log(jid, f"メインボーカルの分離を開始 ({separate.KARAOKE_MODEL}・{'高品質' if quality == 'high' else '標準'})"
+             " ※初回はモデルをダウンロードします")
     t0 = time.time()
     job = load(jid)
-    extra = separate.split_lead_vocals(d / "stems", list(job["stems"]), _progress(jid, lo, hi))
+    extra = separate.split_lead_vocals(d / "stems", list(job["stems"]), _progress(jid, lo, hi), quality)
     for name in (*extra, "karaoke"):
         source.encode_aac(d / "stems" / f"{name}.wav", d / "stems" / f"{name}.m4a")
     job = load(jid)
@@ -208,7 +209,7 @@ def run(jid: str) -> None:
     if job.get("task") == "split_vocals":
         update(jid, status="running", error=None, task=None)
         try:
-            _split_vocals(jid, 0.0, 0.9)
+            _split_vocals(jid, 0.0, 0.9, job.get("task_quality") or "standard")
             if "vocals" in (load(jid).get("parts") or {}):
                 update(jid, stage="ボーカルを再採譜中", progress=0.9)
                 transcribe_part(jid, "vocals", float(opts.get("sensitivity", 0.5)))
@@ -302,7 +303,7 @@ def run(jid: str) -> None:
         # 3.5 メインボーカルとコーラスの分離 (カラオケ用)。失敗しても他の処理は続ける
         if opts.get("split_vocals") and "vocals" in stems and stems["vocals"]["rms"] > 0.002:
             try:
-                _split_vocals(jid, 0.7, 0.8)
+                _split_vocals(jid, 0.7, 0.8, opts.get("split_quality") or "standard")
             except Cancelled:
                 raise
             except Exception as e:  # noqa: BLE001

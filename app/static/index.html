@@ -66,7 +66,14 @@
         <details class="adv">
           <summary>詳細設定</summary>
           <label class="check"><input type="checkbox" id="transcribe" checked> 各パートの採譜（楽譜/MIDI 生成）</label>
-          <label class="check" id="splitVocalsRow"><input type="checkbox" id="splitVocals"> メインボーカルとコーラスを分ける（カラオケ用・時間がかかります）</label>
+          <div id="splitVocalsRow">
+            <label class="check"><input type="checkbox" id="splitVocals"> メインボーカルとコーラスを分ける（カラオケ用・時間がかかります）</label>
+            <label class="field">カラオケ分離の品質
+              <select id="splitQuality">
+                <option value="standard">標準（3分の曲で約20分）</option>
+                <option value="high">高品質（3分の曲で約50分）</option>
+              </select></label>
+          </div>
           <label class="field">採譜の感度 <output id="sensOut">0.50</output>
             <input type="range" id="sensitivity" min="0" max="1" step="0.05" value="0.5">
             <span class="range-labels"><span>控えめ</span><span>多めに拾う</span></span>

@@ -132,6 +132,7 @@ $("#jobForm").onsubmit = async (e) => {
   fd.append("sensitivity", $("#sensitivity").value);
   fd.append("shifts", $("#shifts").value);
   fd.append("split_vocals", $("#splitVocals").checked);
+  fd.append("split_quality", $("#splitQuality").value);
   if ($("#trimStart").value) fd.append("start", $("#trimStart").value);
   if ($("#trimEnd").value) fd.append("end", $("#trimEnd").value);
   const btn = $("#submitBtn"); btn.disabled = true; btn.textContent = "送信中…";
@@ -599,8 +600,11 @@ $("#karaokeBtn").onclick = () => {
   if (v) { v.mute = !v.mute; Player.applyGains(); }
 };
 $("#splitBtn").onclick = async () => {
-  if (!confirm("ボーカルをメインボーカルとコーラスに分けて、コーラス入りのカラオケ音源を作ります。\n数分〜十数分かかります（初回はモデルのダウンロードもあります）。実行しますか？")) return;
-  try { await api(`/api/jobs/${S.job.id}/split_vocals`, { method: "POST" }); openJob(S.job.id); refreshList(); }
+  // 品質は「新しい曲を解析」の詳細設定にある「カラオケ分離の品質」と同じものを使う
+  const q = $("#splitQuality").value;
+  const label = q === "high" ? "高品質（3分の曲で約50分）" : "標準（3分の曲で約20分）";
+  if (!confirm(`ボーカルをメインボーカルとコーラスに分けて、コーラス入りのカラオケ音源を作ります。\n品質: ${label}\n（品質は「詳細設定」の「カラオケ分離の品質」で変えられます）\n実行しますか？`)) return;
+  try { await api(`/api/jobs/${S.job.id}/split_vocals?quality=${q}`, { method: "POST" }); openJob(S.job.id); refreshList(); }
   catch (e) { toast(e.message, 5000); }
 };
 addEventListener("resize", () => Player.redrawAll());

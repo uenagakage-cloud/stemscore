@@ -276,6 +276,7 @@ async def create_job(
     sensitivity: float = Form(0.5),
     shifts: int = Form(1),
     split_vocals: bool = Form(False),
+    split_quality: str = Form("standard"),
     start: float | None = Form(None),
     end: float | None = Form(None),
 ):
@@ -288,7 +289,8 @@ async def create_job(
                                  "終わってから追加してください")
     options = {"model": model, "transcribe": transcribe, "sensitivity": min(1, max(0, sensitivity)),
                "shifts": min(5, max(1, shifts)), "start": start or None, "end": end or None,
-               "split_vocals": split_vocals}
+               "split_vocals": split_vocals,
+               "split_quality": "high" if split_quality == "high" else "standard"}
     if file is not None and file.filename:
         ext = Path(file.filename).suffix.lower()
         if ext not in AUDIO_EXT:
@@ -345,7 +347,7 @@ def cancel_job(jid: str):
 
 
 @app.post("/api/jobs/{jid}/split_vocals")
-def split_vocals(jid: str):
+def split_vocals(jid: str, quality: str = "standard"):
     """処理済みの曲で、メインボーカルとコーラスを分ける (カラオケ音源づくり)。"""
     job = _job_or_404(jid)
     if job["status"] != "done":
@@ -355,7 +357,8 @@ def split_vocals(jid: str):
     from .separate import karaoke_status
     if not karaoke_status()["installed"]:
         raise HTTPException(501, "メインボーカル分離用のライブラリ (audio-separator) が入っていません")
-    jobs.update(jid, status="queued", stage="待機中 (メインボーカルの分離)", progress=0, task="split_vocals")
+    jobs.update(jid, status="queued", stage="待機中 (メインボーカルの分離)", progress=0, task="split_vocals",
+                task_quality="high" if quality == "high" else "standard")
     jobs.enqueue(jid)
     return {"ok": True}
 

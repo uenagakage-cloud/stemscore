@@ -1,5 +1,6 @@
 # Google Colab 用 (torch / torchaudio / librosa / numpy は Colab に入っているものを使う)
 demucs==4.0.1
+audio-separator[cpu]==0.47.1
 soundfile
 music21>=9
 pretty_midi

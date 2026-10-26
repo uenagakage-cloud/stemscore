@@ -241,7 +241,12 @@ def _stem_info(name: str, arr: np.ndarray, n_peaks: int = 1200) -> dict:
             "rms": round(float(np.sqrt(np.mean(arr.astype(np.float64) ** 2))), 5)}
 
 
-def split_lead_vocals(stem_dir: Path, all_stems: list[str], on_progress=lambda f: None) -> dict:
+# 区間を何回重ねて処理するか。多いほど正確だが遅い (CPU で 3 分の曲: 2 回 ≈ 20 分 / 8 回 ≈ 50 分)
+KARAOKE_OVERLAP = {"standard": 2, "high": 8}
+
+
+def split_lead_vocals(stem_dir: Path, all_stems: list[str], on_progress=lambda f: None,
+                      quality: str = "standard") -> dict:
     """vocals.wav を lead (メインボーカル) と backing (コーラス) に分け、
     karaoke.wav (メインボーカル以外すべて = コーラス入りの伴奏) を作る。"""
     import logging
@@ -249,12 +254,16 @@ def split_lead_vocals(stem_dir: Path, all_stems: list[str], on_progress=lambda f
 
     from audio_separator.separator import Separator
 
+    from .source import ensure_ffmpeg_on_path
+    ensure_ffmpeg_on_path()
     tmp = stem_dir / "_uvr"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir()
     uvr_model_dir().mkdir(parents=True, exist_ok=True)
     sep = Separator(output_dir=str(tmp), model_file_dir=str(uvr_model_dir()), output_format="WAV",
-                    log_level=logging.WARNING)
+                    log_level=logging.WARNING,
+                    mdxc_params={"segment_size": 256, "override_model_segment_size": False, "batch_size": 1,
+                                 "overlap": KARAOKE_OVERLAP.get(quality, 2), "pitch_shift": 0})
     sep.load_model(model_filename=KARAOKE_MODEL)
     on_progress(0.1)
     outs = [tmp / Path(o).name for o in sep.separate(str(stem_dir / "vocals.wav"))]
