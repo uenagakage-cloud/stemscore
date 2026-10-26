@@ -66,6 +66,7 @@
         <details class="adv">
           <summary>詳細設定</summary>
           <label class="check"><input type="checkbox" id="transcribe" checked> 各パートの採譜（楽譜/MIDI 生成）</label>
+          <label class="check" id="splitVocalsRow"><input type="checkbox" id="splitVocals"> メインボーカルとコーラスを分ける（カラオケ用・時間がかかります）</label>
           <label class="field">採譜の感度 <output id="sensOut">0.50</output>
             <input type="range" id="sensitivity" min="0" max="1" step="0.05" value="0.5">
             <span class="range-labels"><span>控えめ</span><span>多めに拾う</span></span>
@@ -139,6 +140,7 @@
           </div>
           <div class="head-actions">
             <a class="btn" id="zipBtn">⬇ 一式をZIPで保存</a>
+            <button class="ghost" id="splitBtn" hidden title="ボーカルをメインとコーラスに分けて、コーラス入りのカラオケ音源を作ります">🎤 メインボーカルを分離</button>
             <button class="ghost danger" id="delBtn">削除</button>
           </div>
         </div>
@@ -159,10 +161,14 @@
           <label class="mini">速度 <output id="rateOut">100%</output>
             <input type="range" id="rate" min="0.5" max="1.5" step="0.05" value="1"></label>
           <label class="mini">音量 <input type="range" id="master" min="0" max="1.5" step="0.01" value="1"></label>
+          <span class="mini key-ctl" title="曲全体のキー (テンポはそのまま)">曲のキー
+            <span class="stepper"><button id="kDown" type="button">−</button><output id="kOut">0</output><button id="kUp" type="button">＋</button></span>
+            <b id="keyName"></b></span>
           <span class="ab"><button class="ghost" id="aBtn" title="現在位置をループ開始点に">A</button><button class="ghost" id="bBtn" title="現在位置をループ終了点に">B</button></span>
           <button class="ghost toggle" id="loopBtn" title="ループ (L)。波形上を Shift+ドラッグで区間指定">⟲ ループ</button>
           <button class="ghost toggle" id="clickBtn" title="メトロノーム (C)">♩ クリック</button>
           <button class="ghost" id="karaokeBtn" title="ボーカルだけミュート">🎤 カラオケ</button>
+          <a class="ghost" id="karaokeDl" title="ボーカルを除いた伴奏を、今のキーで WAV 保存">⬇ 伴奏（カラオケ音源）</a>
         </div>
         <div class="chord-now">
           <div><small>現在のコード</small><b id="chordNow">–</b></div>

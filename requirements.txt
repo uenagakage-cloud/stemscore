@@ -1,8 +1,10 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-numpy<2
+numpy>=2
 torch==2.5.1
 torchaudio==2.5.1
 demucs==4.0.1
+# メインボーカルとコーラスの分離 (カラオケ用。UVR のモデルを使う)
+audio-separator[cpu]==0.47.1
 soundfile
 librosa>=0.10
 pretty_midi

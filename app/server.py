@@ -165,7 +165,9 @@ def remove_member(mid: str):
 @app.get("/api/config")
 def get_config():
     from . import config
-    return {"cloud": config.CLOUD, "inbox": bool(config.INBOX), "upload_limit_mb": config.UPLOAD_LIMIT_MB}
+    from .separate import karaoke_status
+    return {"cloud": config.CLOUD, "inbox": bool(config.INBOX), "upload_limit_mb": config.UPLOAD_LIMIT_MB,
+            "karaoke": karaoke_status()}
 
 
 @app.get("/api/inbox")
@@ -273,6 +275,7 @@ async def create_job(
     transcribe: bool = Form(True),
     sensitivity: float = Form(0.5),
     shifts: int = Form(1),
+    split_vocals: bool = Form(False),
     start: float | None = Form(None),
     end: float | None = Form(None),
 ):
@@ -284,7 +287,8 @@ async def create_job(
         raise HTTPException(429, f"同時に処理できるのは {config.MEMBER_MAX_ACTIVE} 曲までです。"
                                  "終わってから追加してください")
     options = {"model": model, "transcribe": transcribe, "sensitivity": min(1, max(0, sensitivity)),
-               "shifts": min(5, max(1, shifts)), "start": start or None, "end": end or None}
+               "shifts": min(5, max(1, shifts)), "start": start or None, "end": end or None,
+               "split_vocals": split_vocals}
     if file is not None and file.filename:
         ext = Path(file.filename).suffix.lower()
         if ext not in AUDIO_EXT:
@@ -337,6 +341,22 @@ def delete_job(jid: str):
 def cancel_job(jid: str):
     _job_or_404(jid)
     jobs.cancel(jid)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{jid}/split_vocals")
+def split_vocals(jid: str):
+    """処理済みの曲で、メインボーカルとコーラスを分ける (カラオケ音源づくり)。"""
+    job = _job_or_404(jid)
+    if job["status"] != "done":
+        raise HTTPException(409, "曲の処理が終わってから実行してください")
+    if "vocals" not in job.get("stems", {}):
+        raise HTTPException(400, "ボーカルのパートがありません")
+    from .separate import karaoke_status
+    if not karaoke_status()["installed"]:
+        raise HTTPException(501, "メインボーカル分離用のライブラリ (audio-separator) が入っていません")
+    jobs.update(jid, status="queued", stage="待機中 (メインボーカルの分離)", progress=0, task="split_vocals")
+    jobs.enqueue(jid)
     return {"ok": True}
 
 
@@ -435,11 +455,36 @@ def _disp(fname: str) -> str:
     return f"attachment; filename=\"download\"; filename*=UTF-8''{quote(fname)}"
 
 
+def _pitched(jid: str, name: str, pitch: int, ext: str) -> Path:
+    """パートの音声をキー変更したもの (なければ作ってキャッシュする)。"""
+    from .source import pitch_shift
+    d = jobs.job_dir(jid) / "stems"
+    wav = d / f"{name}.wav"
+    if not wav.exists():
+        raise HTTPException(404)
+    out = d / f"pitch_{pitch:+d}" / f"{name}{ext}"
+    with _file_lock(str(out)):
+        if not out.exists():
+            pitch_shift(wav, out, pitch)
+    return out
+
+
+def _pitch_ok(pitch: int) -> int:
+    if not -12 <= pitch <= 12:
+        raise HTTPException(400, "キーは ±12 半音の範囲で指定してください")
+    return pitch
+
+
 @app.get("/api/jobs/{jid}/file/{name}")
-def job_file(jid: str, name: str, download: bool = False):
+def job_file(jid: str, name: str, download: bool = False, pitch: int = 0):
     job = _job_or_404(jid)
     if not re.fullmatch(r"[\w.]+", name):
         raise HTTPException(404)
+    if _pitch_ok(pitch) and name.endswith(".wav"):
+        # キーを変えた音声 (カラオケ練習用など)
+        f = _pitched(jid, name[:-4], pitch, ".wav")
+        label = f"{_safe(job['title'])}_{name[:-4]}_key{pitch:+d}.wav"
+        return FileResponse(f, headers={"Content-Disposition": _disp(label)} if download else {})
     for sub in ("stems", "parts", ""):
         f = jobs.job_dir(jid) / sub / name
         if f.is_file():
@@ -449,11 +494,14 @@ def job_file(jid: str, name: str, download: bool = False):
 
 
 @app.get("/api/jobs/{jid}/stream/{name}")
-def stream(jid: str, name: str):
-    """再生用の軽量音声 (AAC)。WAV の 1/8 程度のサイズでスマホでも読み込みが速い。"""
+def stream(jid: str, name: str, pitch: int = 0):
+    """再生用の軽量音声 (AAC)。WAV の 1/8 程度のサイズでスマホでも読み込みが速い。
+    pitch を指定すると、テンポはそのままでキーを変えた音声を返す。"""
     _job_or_404(jid)
     if not re.fullmatch(r"\w+", name):
         raise HTTPException(404)
+    if _pitch_ok(pitch):
+        return FileResponse(_pitched(jid, name, pitch, ".m4a"), media_type="audio/mp4")
     d = jobs.job_dir(jid) / "stems"
     wav = d / f"{name}.wav"
     if not wav.exists():

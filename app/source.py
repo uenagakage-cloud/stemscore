@@ -195,3 +195,37 @@ def configure_proxy(log=print) -> None:
         os.environ[k] = url
     os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,::1,.local")
     log(f"  プロキシを使用します: {url}")
+
+
+_has_rubberband: bool | None = None
+
+
+def _rubberband_available() -> bool:
+    global _has_rubberband
+    if _has_rubberband is None:
+        out = subprocess.run([FFMPEG, "-hide_banner", "-filters"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace").stdout
+        _has_rubberband = " rubberband " in out
+    return _has_rubberband
+
+
+def pitch_shift(src: Path, dst: Path, semitones: int) -> None:
+    """テンポを変えずにキー (音程) を semitones 半音ずらす。出力形式は dst の拡張子 (.wav / .m4a) で決まる。
+
+    高品質な Rubber Band が ffmpeg に入っていればそれを使い、なければ ffmpeg 標準の方法
+    (サンプリングレート変更 + テンポ補正) で処理する。
+    """
+    ratio = 2 ** (semitones / 12)
+    if _rubberband_available():
+        af = f"rubberband=pitch={ratio:.6f}:pitchq=quality:transients=mixed"
+    else:
+        af = f"asetrate=44100*{ratio:.6f},aresample=44100,atempo={1 / ratio:.6f}"
+    codec = ["-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"] if dst.suffix == ".m4a"         else ["-c:a", "pcm_s16le"]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.stem + ".tmp" + dst.suffix)
+    cmd = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", str(src), "-vn", "-af", af,
+           "-ar", "44100", *codec, str(tmp)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise SourceError(f"キーの変更に失敗しました: {proc.stderr.strip()[-300:]}")
+    tmp.replace(dst)

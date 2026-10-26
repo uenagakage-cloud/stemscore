@@ -211,3 +211,84 @@ def separate(wav_path: Path, out_dir: Path, model_name: str, on_progress, shifts
             del x, out
             on_progress((bi + 1) / len(blocks))
     return writer.close()
+
+
+# ───────── メインボーカルとコーラスの分離 (カラオケ用) ─────────
+# UVR (Ultimate Vocal Remover) のカラオケ用モデル。ボーカルを「メイン」と「それ以外 (コーラス)」に分ける
+KARAOKE_MODEL = os.environ.get("STEMSCORE_KARAOKE_MODEL") or \
+    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+
+
+def uvr_model_dir() -> Path:
+    return checkpoint_dir().parent.parent / "uvr"
+
+
+def karaoke_status() -> dict:
+    try:
+        import audio_separator  # noqa: F401
+        installed = True
+    except ImportError:
+        installed = False
+    return {"installed": installed, "model": KARAOKE_MODEL,
+            "downloaded": (uvr_model_dir() / KARAOKE_MODEL).exists()}
+
+
+def _stem_info(name: str, arr: np.ndarray, n_peaks: int = 1200) -> dict:
+    mono = np.abs(arr).max(axis=1)
+    step = max(1, len(mono) // n_peaks)
+    pk = mono[: step * (len(mono) // step)].reshape(-1, step).max(axis=1)[:n_peaks]
+    return {"file": f"{name}.wav", "peaks": [round(float(v), 3) for v in pk],
+            "rms": round(float(np.sqrt(np.mean(arr.astype(np.float64) ** 2))), 5)}
+
+
+def split_lead_vocals(stem_dir: Path, all_stems: list[str], on_progress=lambda f: None) -> dict:
+    """vocals.wav を lead (メインボーカル) と backing (コーラス) に分け、
+    karaoke.wav (メインボーカル以外すべて = コーラス入りの伴奏) を作る。"""
+    import logging
+    import shutil
+
+    from audio_separator.separator import Separator
+
+    tmp = stem_dir / "_uvr"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir()
+    uvr_model_dir().mkdir(parents=True, exist_ok=True)
+    sep = Separator(output_dir=str(tmp), model_file_dir=str(uvr_model_dir()), output_format="WAV",
+                    log_level=logging.WARNING)
+    sep.load_model(model_filename=KARAOKE_MODEL)
+    on_progress(0.1)
+    outs = [tmp / Path(o).name for o in sep.separate(str(stem_dir / "vocals.wav"))]
+    on_progress(0.8)
+    # カラオケ用モデルの出力: (Vocals) = メインボーカル、(Instrumental) = それ以外 (入力がボーカルなのでコーラス)
+    lead_f = next((o for o in outs if "(vocals)" in o.name.lower()), None)
+    back_f = next((o for o in outs if o != lead_f), None)
+    if not lead_f or not back_f:
+        raise RuntimeError(f"メインボーカルの分離結果が見つかりません: {[o.name for o in outs]}")
+    ref = sf.info(str(stem_dir / "vocals.wav"))
+    result = {}
+    for name, f in (("lead", lead_f), ("backing", back_f)):
+        arr, sr = sf.read(str(f), dtype="float32", always_2d=True)
+        if sr != ref.samplerate:
+            import librosa
+            arr = librosa.resample(arr.T, orig_sr=sr, target_sr=ref.samplerate).T
+        if arr.shape[1] == 1:
+            arr = np.repeat(arr, 2, axis=1)
+        arr = np.pad(arr, ((0, max(0, ref.frames - len(arr))), (0, 0)))[: ref.frames]
+        sf.write(str(stem_dir / f"{name}.wav"), np.clip(arr, -1, 1), ref.samplerate, subtype="PCM_16")
+        result[name] = _stem_info(name, arr)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    # カラオケ音源 = メインボーカル以外のすべて (楽器 + コーラス)。少しずつ足して書き出す
+    parts = [s for s in all_stems if s not in ("vocals", "lead", "backing")] + ["backing"]
+    files = [sf.SoundFile(str(stem_dir / f"{p}.wav")) for p in parts]
+    with sf.SoundFile(str(stem_dir / "karaoke.wav"), "w", ref.samplerate, 2, "PCM_16") as out:
+        while True:
+            blocks = [f.read(ref.samplerate * 30, dtype="float32", always_2d=True) for f in files]
+            n = min(len(b) for b in blocks)
+            if n == 0:
+                break
+            out.write(np.clip(sum(b[:n] for b in blocks), -1, 1))
+    for f in files:
+        f.close()
+    on_progress(1.0)
+    return result

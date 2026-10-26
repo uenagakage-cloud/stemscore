@@ -154,6 +154,9 @@ def transcribe_part(jid: str, part: str, sensitivity: float) -> dict:
     job = load(jid)
     d = job_dir(jid)
     wav = d / "stems" / f"{part}.wav"
+    # メインボーカルを分離済みなら、ボーカル譜はメインボーカルから作る (コーラスの音が混ざらない)
+    if part == "vocals" and (d / "stems" / "lead.wav").exists():
+        wav = d / "stems" / "lead.wav"
     if part == "drums":
         notes = transcribe.transcribe_drums(str(wav), sensitivity)
         pkey = None
@@ -173,6 +176,25 @@ def transcribe_part(jid: str, part: str, sensitivity: float) -> dict:
     return info
 
 
+def _split_vocals(jid: str, lo: float, hi: float) -> None:
+    """メインボーカルとコーラスを分け、カラオケ音源を作る。"""
+    from . import separate, source
+
+    d = job_dir(jid)
+    update(jid, stage="メインボーカルとコーラスを分離中", progress=lo)
+    log(jid, f"メインボーカルの分離を開始 ({separate.KARAOKE_MODEL}) ※初回はモデルをダウンロードします")
+    t0 = time.time()
+    job = load(jid)
+    extra = separate.split_lead_vocals(d / "stems", list(job["stems"]), _progress(jid, lo, hi))
+    for name in (*extra, "karaoke"):
+        source.encode_aac(d / "stems" / f"{name}.wav", d / "stems" / f"{name}.m4a")
+    job = load(jid)
+    job["stems"].update(extra)
+    job["vocal_split"] = True
+    save(job)
+    log(jid, f"メインボーカルの分離完了 ({time.time() - t0:.0f} 秒)。カラオケ音源 (コーラス入り) を作成しました")
+
+
 def run(jid: str) -> None:
     from . import analysis as an
     from . import separate, source
@@ -182,6 +204,24 @@ def run(jid: str) -> None:
         return
     d = job_dir(jid)
     opts = job["options"]
+    # 処理済みの曲に、あとからメインボーカルの分離だけを行う場合
+    if job.get("task") == "split_vocals":
+        update(jid, status="running", error=None, task=None)
+        try:
+            _split_vocals(jid, 0.0, 0.9)
+            if "vocals" in (load(jid).get("parts") or {}):
+                update(jid, stage="ボーカルを再採譜中", progress=0.9)
+                transcribe_part(jid, "vocals", float(opts.get("sensitivity", 0.5)))
+            update(jid, status="done", stage="完了", progress=1.0)
+        except Cancelled:
+            update(jid, status="done", stage="完了 (メインボーカルの分離は中止)", progress=1.0)
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            log(jid, f"メインボーカルの分離に失敗: {e}")
+            update(jid, status="done", stage="完了 (メインボーカルの分離に失敗)", progress=1.0)
+        finally:
+            _cancel.discard(jid)
+        return
     update(jid, status="running", error=None)
     try:
         # 1. 音源取得
@@ -259,9 +299,20 @@ def run(jid: str) -> None:
         update(jid, stems=stems, progress=0.7)
         log(jid, f"分離完了 ({time.time() - t0:.0f} 秒): {', '.join(stems)}")
 
+        # 3.5 メインボーカルとコーラスの分離 (カラオケ用)。失敗しても他の処理は続ける
+        if opts.get("split_vocals") and "vocals" in stems and stems["vocals"]["rms"] > 0.002:
+            try:
+                _split_vocals(jid, 0.7, 0.8)
+            except Cancelled:
+                raise
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                log(jid, f"メインボーカルの分離に失敗したため、通常のボーカルで続けます: {e}")
+            stems = load(jid)["stems"]
+
         # 4. 採譜
         if opts.get("transcribe", True):
-            targets = [s for s in stems if stems[s]["rms"] > 0.002]
+            targets = [s for s in stems if stems[s]["rms"] > 0.002 and s not in ("lead", "backing")]
             for s in stems:
                 if s not in targets:
                     log(jid, f"{s}: ほぼ無音のため採譜をスキップ")

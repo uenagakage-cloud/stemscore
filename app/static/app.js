@@ -4,13 +4,21 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 
 const STEM_INFO = {
   vocals: { label: "ボーカル", color: "#e84393" },
+  lead:   { label: "メインボーカル", color: "#e84393" },
+  backing:{ label: "コーラス", color: "#fd79a8" },
   drums:  { label: "ドラム",   color: "#f39c12" },
   bass:   { label: "ベース",   color: "#00b894" },
   guitar: { label: "ギター",   color: "#0984e3" },
   piano:  { label: "ピアノ",   color: "#8e44ad" },
   other:  { label: "その他",   color: "#7f8c8d" },
 };
-const STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"];
+const STEM_ORDER = ["vocals", "lead", "backing", "drums", "bass", "guitar", "piano", "other"];
+// メインボーカルを分離済みの曲では、ミキサーに「ボーカル」の代わりに「メインボーカル」「コーラス」を並べる
+function mixerStems(job) {
+  const all = Object.keys(job.stems || {});
+  return all.filter((n) => !(n === "vocals" && all.includes("lead") && all.includes("backing")));
+}
+function leadName() { return Player.tracks.some((t) => t.name === "lead") ? "lead" : "vocals"; }
 const DRUM_NAMES = { 36: "Kick", 38: "Snare", 42: "Hi-hat", 45: "Tom", 49: "Crash" };
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -123,6 +131,7 @@ $("#jobForm").onsubmit = async (e) => {
   fd.append("transcribe", $("#transcribe").checked);
   fd.append("sensitivity", $("#sensitivity").value);
   fd.append("shifts", $("#shifts").value);
+  fd.append("split_vocals", $("#splitVocals").checked);
   if ($("#trimStart").value) fd.append("start", $("#trimStart").value);
   if ($("#trimEnd").value) fd.append("end", $("#trimEnd").value);
   const btn = $("#submitBtn"); btn.disabled = true; btn.textContent = "送信中…";
@@ -236,9 +245,11 @@ async function refreshList() {
 let pollTimer = null;
 async function openJob(id) {
   clearTimeout(pollTimer);
+  const seq = (S.openSeq = (S.openSeq || 0) + 1);   // 続けて開いたときは最後に開いた曲だけを表示する
+  const job = await api(`/api/jobs/${id}`);
+  if (seq !== S.openSeq) return;
   Player.unload();
   S.notes = {}; S.part = null;
-  const job = await api(`/api/jobs/${id}`);
   S.job = job;
   store.set("lastJob", id);
   $("#empty").hidden = true; $("#detail").hidden = false;
@@ -269,7 +280,7 @@ function renderHead() {
   $("#jobTitle").textContent = j.title;
   const chips = [];
   if (a) {
-    chips.push(`<span class="chip">キー <b>${esc(a.key.name)}</b></span>`);
+    chips.push(`<span class="chip">キー <b>${esc(a.key.name)}</b>${S.pitch ? ` → <b>${esc(keyLabel())}</b>` : ""}</span>`);
     chips.push(`<span class="chip">BPM <b>${a.bpm}</b></span>`);
     chips.push(`<span class="chip">長さ ${fmt(a.duration)}</span>`);
     const alt = a.key_candidates.slice(1, 3).map((k) => k.name).join(" / ");
@@ -290,6 +301,7 @@ function renderHead() {
   if (atBottom) lb.scrollTop = lb.scrollHeight;
   $("#zipBtn").href = `/api/jobs/${j.id}/zip`;
   $("#zipBtn").hidden = j.status !== "done";
+  $("#splitBtn").hidden = !(j.status === "done" && j.stems?.vocals && !j.stems?.lead && S.cfg?.karaoke?.installed);
 }
 
 $("#delBtn").onclick = async () => {
@@ -307,7 +319,11 @@ $("#retryBtn").onclick = async () => {
 
 function buildDone() {
   $("#playerCard").hidden = false;
+  S.pitch = store.get(`pitch:${S.job.id}`, 0);   // 曲ごとに前回のキーを復元
   Player.load(S.job);
+  updateKeyUI();
+  renderHead();
+  setTranspose(S.pitch);   // 楽譜の移調も曲のキーに合わせる
   const parts = Object.keys(S.job.parts || {}).sort((a, b) => STEM_ORDER.indexOf(a) - STEM_ORDER.indexOf(b));
   $("#partsCard").hidden = !parts.length;
   if (!parts.length) return;
@@ -348,7 +364,7 @@ const Player = {
     $("#miniTitle").textContent = job.title;
     $("#miniPlayer").hidden = false; document.body.classList.add("has-player");
     this.dur = job.analysis?.duration || 0;
-    const names = Object.keys(job.stems).sort((a, b) => STEM_ORDER.indexOf(a) - STEM_ORDER.indexOf(b));
+    const names = mixerStems(job).sort((a, b) => STEM_ORDER.indexOf(a) - STEM_ORDER.indexOf(b));
     const box = $("#tracks");
     names.forEach((name, i) => {
       const st = job.stems[name], info = STEM_INFO[name] || { label: name, color: "#888" };
@@ -363,7 +379,7 @@ const Player = {
           <div class="btns">
             <button class="m" title="ミュート">M</button><button class="s" title="ソロ">S</button>
             <input type="range" min="0" max="1.5" step="0.01" value="1" title="音量">
-            <a href="/api/jobs/${job.id}/file/${st.file}?download=1" title="WAV をダウンロード">⬇WAV</a>
+            <a class="dl" data-file="${st.file}" href="/api/jobs/${job.id}/file/${st.file}?download=1" title="WAV をダウンロード (今のキー)">⬇WAV</a>
           </div>
           <div class="key">${esc(extra)}</div>
         </div>
@@ -371,7 +387,7 @@ const Player = {
       box.appendChild(el);
       const audio = new Audio();
       audio.preload = "auto";
-      audio.src = `/api/jobs/${job.id}/stream/${name}`;
+      audio.src = streamUrl(job.id, name);
       audio.preservesPitch = true; audio.webkitPreservesPitch = true;
       audio.playsInline = true;
       const t = { name, el, audio, peaks: st.peaks, color: info.color, vol: 1, mute: false, solo: false,
@@ -410,7 +426,7 @@ const Player = {
       t.el.querySelector(".m").classList.toggle("on", t.mute);
       t.el.querySelector(".s").classList.toggle("on", t.solo);
     });
-    const voc = this.tracks.find((t) => t.name === "vocals");
+    const voc = this.tracks.find((t) => t.name === leadName());
     $("#karaokeBtn").classList.toggle("on", !!voc?.mute);
   },
 
@@ -577,21 +593,91 @@ $("#bBtn").onclick = () => {
   Player.b = t; Player.setLoop(true); Player.seek(Player.a);
 };
 $("#clickBtn").onclick = () => { Player.click = !Player.click; $("#clickBtn").classList.toggle("on", Player.click); Player.schedCursor = Player.time; };
+// カラオケ: メインボーカルだけを消す (分離前の曲ではボーカル全体)
 $("#karaokeBtn").onclick = () => {
-  const v = Player.tracks.find((t) => t.name === "vocals");
+  const v = Player.tracks.find((t) => t.name === leadName());
   if (v) { v.mute = !v.mute; Player.applyGains(); }
 };
+$("#splitBtn").onclick = async () => {
+  if (!confirm("ボーカルをメインボーカルとコーラスに分けて、コーラス入りのカラオケ音源を作ります。\n数分〜十数分かかります（初回はモデルのダウンロードもあります）。実行しますか？")) return;
+  try { await api(`/api/jobs/${S.job.id}/split_vocals`, { method: "POST" }); openJob(S.job.id); refreshList(); }
+  catch (e) { toast(e.message, 5000); }
+};
 addEventListener("resize", () => Player.redrawAll());
+
+// ───────── 曲全体のキー (半音単位で上げ下げ。テンポはそのまま) ─────────
+S.pitch = 0;
+const SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+function streamUrl(jid, name) { return `/api/jobs/${jid}/stream/${name}${S.pitch ? `?pitch=${S.pitch}` : ""}`; }
+// 移調後のキーでフラット系の表記を使うか (サーバーの analysis.py と同じ規則)
+function useFlats() {
+  const k = S.job?.analysis?.key; if (!k) return false;
+  const t = (((k.tonic + S.pitch) % 12) + 12) % 12;
+  return k.mode === "major" ? [5, 10, 3, 8, 1].includes(t) : [2, 7, 0, 5, 10].includes(t);
+}
+function transposeName(root, n) {
+  const i = SHARP.indexOf(root) >= 0 ? SHARP.indexOf(root) : FLAT.indexOf(root);
+  if (i < 0) return root;
+  return (useFlats() ? FLAT : SHARP)[(((i + n) % 12) + 12) % 12];
+}
+function chordLabel(c) {
+  if (!c || c === "N" || !S.pitch) return c;
+  const root = c.length > 1 && "#b".includes(c[1]) ? c.slice(0, 2) : c[0];
+  return transposeName(root, S.pitch) + c.slice(root.length);
+}
+function keyLabel() {
+  const k = S.job?.analysis?.key; if (!k) return "";
+  const [root, mode] = k.name.split(" ");
+  return `${transposeName(root, S.pitch)} ${mode}`;
+}
+function updateKeyUI() {
+  $("#kOut").textContent = (S.pitch > 0 ? "+" : "") + S.pitch;
+  $("#keyName").textContent = keyLabel();
+  if (!S.job) return;
+  const q = S.pitch ? `&pitch=${S.pitch}` : "";
+  $$(".track a.dl").forEach((a) => (a.href = `/api/jobs/${S.job.id}/file/${a.dataset.file}?download=1${q}`));
+  // メインボーカル分離済みならコーラス入りのカラオケ音源、まだならボーカルを全部除いた伴奏
+  const kara = S.job.stems?.lead ? "karaoke" : "instrumental";
+  $("#karaokeDl").href = `/api/jobs/${S.job.id}/file/${kara}.wav?download=1${q}`;
+  $("#karaokeDl").textContent = S.job.stems?.lead ? "⬇ カラオケ音源（コーラス入り）" : "⬇ 伴奏（ボーカルなし）";
+}
+async function setPitch(n) {
+  n = Math.max(-6, Math.min(6, n));
+  if (!S.job || n === S.pitch) return;
+  const ctl = $(".key-ctl"); ctl.classList.add("busy");
+  const wasPlaying = Player.playing, t = Player.time;
+  Player.pause();
+  S.pitch = n;
+  store.set(`pitch:${S.job.id}`, n);
+  updateKeyUI();
+  renderHead();
+  setTranspose(n);   // 楽譜も同じだけ移調する
+  toast(n ? `キーを ${n > 0 ? "+" : ""}${n} に変更中…（初回は少し時間がかかります）` : "原曲のキーに戻しています…", 8000);
+  // 全パートの音声を新しいキーのものに差し替え、読み込めたら同じ位置から再開
+  await Promise.all(Player.tracks.map((tr) => new Promise((res) => {
+    const done = () => { tr.audio.removeEventListener("canplay", done); tr.audio.removeEventListener("error", done); res(); };
+    tr.audio.addEventListener("canplay", done); tr.audio.addEventListener("error", done);
+    tr.audio.src = streamUrl(S.job.id, tr.name);
+    tr.audio.load();
+  })));
+  Player.seek(t);
+  ctl.classList.remove("busy");
+  toast(`キー: ${keyLabel()}${n ? `（${n > 0 ? "+" : ""}${n}）` : "（原曲）"}`);
+  if (wasPlaying) Player.play();
+}
+$("#kUp").onclick = () => setPitch(S.pitch + 1);
+$("#kDown").onclick = () => setPitch(S.pitch - 1);
 
 // ───────── コード表示 ─────────
 function chordsOf() { return S.job?.analysis?.chords || []; }
 function chordAt(t) { return chordsOf().findIndex((c) => t >= c.start && t < c.end); }
 function updateChordNow(t) {
   const cs = chordsOf(); const i = chordAt(t);
-  $("#chordNow").textContent = i >= 0 && cs[i].chord !== "N" ? cs[i].chord : "–";
+  $("#chordNow").textContent = i >= 0 && cs[i].chord !== "N" ? chordLabel(cs[i].chord) : "–";
   $("#miniChord").textContent = $("#chordNow").textContent;
   const nx = cs.slice(i + 1).find((c) => c.chord !== "N");
-  $("#chordNext").textContent = nx ? nx.chord : "–";
+  $("#chordNext").textContent = nx ? chordLabel(nx.chord) : "–";
 }
 function drawChordLane(t) {
   const c = $("#chordLane"), dpr = devicePixelRatio || 1;
@@ -611,9 +697,10 @@ function drawChordLane(t) {
     const on = t >= ch.start && t < ch.end;
     g.fillStyle = on ? cssVar("--accent") : cssVar("--panel-2");
     g.fillRect(x0 + 0.5, 2 * dpr, Math.max(1, x1 - x0 - 1), h - 4 * dpr);
-    if (x1 - x0 > g.measureText(ch.chord).width + 4 * dpr) {
+    const label = chordLabel(ch.chord);
+    if (x1 - x0 > g.measureText(label).width + 4 * dpr) {
       g.fillStyle = on ? "#fff" : cssVar("--text");
-      g.fillText(ch.chord, x0 + 3 * dpr, h / 2);
+      g.fillText(label, x0 + 3 * dpr, h / 2);
     }
   }
 }
@@ -676,7 +763,7 @@ const Scheduler = {
         for (const n of notes) {
           if (n.start < from || n.start >= to) continue;
           if (part === "drums") Synth.drum(ctx, at(n.start), n.pitch, n.velocity);
-          else Synth.tone(ctx, at(n.start), n.pitch, Math.max(0.05, (n.end - n.start) / rate), n.velocity);
+          else Synth.tone(ctx, at(n.start), n.pitch + S.pitch, Math.max(0.05, (n.end - n.start) / rate), n.velocity);
         }
       }
     }
@@ -723,7 +810,9 @@ async function selectPart(part) {
 S.playMode = "all";
 function applyPlayMode() {
   if (!Player.tracks.length || !S.part) return;
-  const names = S.part === "__full" ? Object.keys(S.job.parts) : [S.part];
+  // ボーカル譜はメインボーカルから作っているので、分離済みならメインボーカルのトラックを対象にする
+  const names = (S.part === "__full" ? Object.keys(S.job.parts) : [S.part])
+    .map((n) => (n === "vocals" ? leadName() : n));
   Player.tracks.forEach((t) => {
     if (S.playMode === "solo") { t.solo = names.includes(t.name); t.mute = false; }
     else if (S.playMode === "minus") { t.solo = false; t.mute = names.includes(t.name); }
@@ -912,7 +1001,7 @@ const Roll = {
     const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = cssVar("--panel-2"); g.fillRect(0, 0, W, H);
     const parts = monitorParts();
-    const all = parts.flatMap(([p, ns]) => ns.map((n) => ({ ...n, part: p })));
+    const all = parts.flatMap(([p, ns]) => ns.map((n) => ({ ...n, part: p, pitch: p === "drums" ? n.pitch : n.pitch + S.pitch })));
     const drumsOnly = parts.length === 1 && parts[0][0] === "drums";
     const keyW = 44, top = 18;
     // 表示範囲 (zoom で秒数を変える)
@@ -952,7 +1041,7 @@ const Roll = {
     g.font = "11px sans-serif"; g.textBaseline = "middle";
     for (const ch of chordsOf()) {
       if (ch.end < t0 || ch.start > t1 || ch.chord === "N") continue;
-      g.fillStyle = cssVar("--accent"); g.fillText(ch.chord, Math.max(keyW, X(ch.start)) + 2, 9);
+      g.fillStyle = cssVar("--accent"); g.fillText(chordLabel(ch.chord), Math.max(keyW, X(ch.start)) + 2, 9);
     }
     // ノート
     for (const n of all) {
@@ -1088,6 +1177,7 @@ $("#resetKeyBtn").onclick = async () => {
   refreshModels();
   api("/api/config").then((cfg) => {
     S.cfg = cfg;
+    $("#splitVocalsRow").hidden = !cfg.karaoke?.installed;
     $("#inboxTab").hidden = !cfg.inbox;
     if (cfg.upload_limit_mb) {
       $("#uploadLimitHint").hidden = false;
