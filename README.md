@@ -64,9 +64,9 @@ YouTube / Spotify / Google Drive の URL、または手元の音声・動画フ�
 PC を起動していなくても、スマホなどから Google Colab（Google の無料のクラウド。GPU 付き）で StemScore を動かせます。処理結果と曲は Google ドライブに保存されます。
 
 ### 準備（最初の 1 回だけ）
-1. PC で `.venv\Scripts\python toolsuild_cloud.py` を実行すると、`dist/` に `StemScore_cloud.zip` と `StemScore_クラウド起動.ipynb` ができます
-2. Google ドライブに「StemScore」フォルダを作り、この 2 つを入れます
-   （アプリを更新したら、`build_cloud.py` をもう一度実行して zip を置き換えます）
+1. PC で `.venv\Scripts\python tools\build_cloud.py` を実行すると、`dist/StemScore_クラウド起動.ipynb` ができます
+2. Google ドライブに「StemScore」フォルダを作り、このノートブックを入れます
+   （アプリ本体は起動のたびに GitHub から最新版を取得するので、更新作業は不要です）
 
 ### 使うとき
 1. Google ドライブの「StemScore」→「StemScore_クラウド起動.ipynb」を開く（Google Colaboratory で開く）
@@ -116,7 +116,7 @@ Dockerfile        クラウド (Render など) 用のコンテナ定義
 render.yaml       Render の Blueprint 設定
 tools/
   StemScore_モデル取得.ipynb   Colab でモデルを取得して Drive に保存するノートブック
-  build_cloud.py              クラウド (Colab) 用の zip と起動ノートブックを dist/ に作る
+  build_cloud.py              クラウド (Colab) の起動ノートブックを dist/ に作る
 ```
 
 ## ネットワークについて（学校・会社など制限のあるネットワーク）

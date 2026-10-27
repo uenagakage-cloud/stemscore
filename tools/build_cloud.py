@@ -1,60 +1,112 @@
-"""クラウド (Google Colab) 用の配布物を作る。
+"""クラウド (Google Colab) で StemScore を起動するノートブックを作る。
 
     .venv\\Scripts\\python tools\\build_cloud.py
 
-dist/ に次の 2 つができる。どちらも Google ドライブの「StemScore」フォルダに置く。
-- StemScore_cloud.zip       アプリ本体
-- StemScore_クラウド起動.ipynb  Colab で開いて ▶ を押すと StemScore が起動するノートブック
+dist/StemScore_クラウド起動.ipynb ができる。Google ドライブに置いて Colab で開き、▶ を押すと
+GitHub から最新のコードを取得して StemScore を起動する (アプリ本体の zip を置く必要はない)。
+
+Google ドライブとの接続は 2 通り:
+- マウント方式 (通常): 処理結果をドライブの「StemScore/data」に保存するので、次回も残る
+- API 方式 (マウントできないブラウザ向けの予備): 「曲」フォルダの曲は使えるが、処理結果は Colab を止めると消える
 """
 from __future__ import annotations
 
 import json
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
+REPO = "https://github.com/uenagakage-cloud/stemscore.git"
 
 LAUNCH_CODE = r'''#@title ▶ StemScore を起動（初回は 3〜5 分、2 回目以降は 1〜2 分）
-import os, sys, time, shutil, subprocess, urllib.request
-from google.colab import drive
+import os, sys, time, shutil, subprocess, threading, urllib.request
 from google.colab.output import eval_js
 from IPython.display import display, HTML
 
-try:
-    drive.mount('/content/drive')
-except ValueError:
-    raise SystemExit('Google ドライブに接続できませんでした。許可の画面（別ウィンドウ）が出たら最後まで進めてください。'
-                     'ポップアップがブロックされている場合は許可してから、もう一度 ▶ を押してください')
-ROOT = '/content/drive/MyDrive/StemScore'   # アプリ本体と処理結果
-INBOX = '/content/drive/MyDrive/曲'          # 曲を入れるフォルダ (画面の「Drive」タブに表示)
+REPO = "__REPO__"
 APP = '/content/stemscore'
-os.makedirs(ROOT + '/data', exist_ok=True)
-os.makedirs(INBOX, exist_ok=True)
+INBOX_NAME = '曲'          # 曲を入れるドライブのフォルダ (画面の「Drive」タブに表示)
 
 def sh(cmd):
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if r.returncode:
         print(r.stdout[-3000:], r.stderr[-3000:])
-        raise SystemExit('セットアップに失敗しました。もう一度実行してください')
+        raise SystemExit('セットアップに失敗しました。もう一度 ▶ を押してください')
 
-zip_path = ROOT + '/StemScore_cloud.zip'
-if not os.path.exists(zip_path):
-    raise SystemExit('Google ドライブの「StemScore」フォルダに StemScore_cloud.zip を置いてから実行してください')
+# ── 1. Google ドライブに接続 (マウントできなければ API 方式に切り替え) ──
+MODE = 'mount'
+try:
+    from google.colab import drive
+    drive.mount('/content/drive')
+    ROOT = '/content/drive/MyDrive/StemScore'
+    DATA = ROOT + '/data'
+    INBOX = f'/content/drive/MyDrive/{INBOX_NAME}'
+    TORCH_HOME = ROOT + '/models'
+except Exception as e:
+    print('ドライブのマウントに失敗したため、API 方式で接続します:', str(e)[:120])
+    MODE = 'api'
+    from google.colab import auth
+    auth.authenticate_user()
+    DATA = '/content/stemscore_data'
+    INBOX = '/content/inbox'
+    TORCH_HOME = '/content/torch'
+os.makedirs(DATA, exist_ok=True)
+os.makedirs(INBOX, exist_ok=True)
+
+if MODE == 'api':
+    # 「曲」フォルダの音声・動画を定期的に /content/inbox へコピーする
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+    gdrive = build('drive', 'v3')
+    EXT = ('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.mp4', '.mov', '.mkv', '.webm')
+
+    def inbox_folder_id():
+        q = f"name = '{INBOX_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        res = gdrive.files().list(q=q, fields='files(id)', pageSize=1).execute().get('files', [])
+        if res:
+            return res[0]['id']
+        return gdrive.files().create(body={'name': INBOX_NAME, 'mimeType': 'application/vnd.google-apps.folder'},
+                                     fields='id').execute()['id']
+
+    def sync_inbox():
+        fid = inbox_folder_id()
+        while True:
+            try:
+                files = gdrive.files().list(q=f"'{fid}' in parents and trashed = false",
+                                            fields='files(id,name,size)', pageSize=200).execute().get('files', [])
+                for f in files:
+                    dst = os.path.join(INBOX, f['name'])
+                    if not f['name'].lower().endswith(EXT) or (os.path.exists(dst) and os.path.getsize(dst) == int(f.get('size') or 0)):
+                        continue
+                    tmp = dst + '.part'
+                    with open(tmp, 'wb') as fh:
+                        dl = MediaIoBaseDownload(fh, gdrive.files().get_media(fileId=f['id']), chunksize=32 << 20)
+                        done = False
+                        while not done:
+                            _, done = dl.next_chunk()
+                    os.replace(tmp, dst)
+            except Exception as e:
+                print('「曲」フォルダの同期でエラー:', e)
+            time.sleep(30)
+
+    threading.Thread(target=sync_inbox, daemon=True).start()
+
+# ── 2. GitHub から最新のコードを取得 ──
 shutil.rmtree(APP, ignore_errors=True)
-sh(f'unzip -q -o "{zip_path}" -d {APP}')
+sh(f'git clone --depth 1 -q {REPO} {APP}')
 
+# ── 3. ライブラリのインストール (このランタイムで初回のみ) ──
 if not os.path.exists('/content/.stemscore_deps'):
-    print('ライブラリをインストール中…（このランタイムで初回のみ）')
+    print('ライブラリをインストール中…（このランタイムで初回のみ、2〜3 分）')
     sh(f'pip install -q -r {APP}/requirements-colab.txt')
     sh('pip install -q --no-deps basic-pitch==0.4.0')
     open('/content/.stemscore_deps', 'w').close()
 
-# 分離モデルは Google ドライブに保存して、次回からダウンロードを省く
-os.makedirs(ROOT + '/models', exist_ok=True)
+# ── 4. StemScore を起動 ──
+os.makedirs(TORCH_HOME, exist_ok=True)
 sh('pkill -f "app.server" || true')
-env = dict(os.environ, STEMSCORE_CLOUD='1', STEMSCORE_DATA=ROOT + '/data', STEMSCORE_INBOX=INBOX,
-           TORCH_HOME=ROOT + '/models', PYTHONUNBUFFERED='1')
+env = dict(os.environ, STEMSCORE_CLOUD='1', STEMSCORE_DATA=DATA, STEMSCORE_INBOX=INBOX,
+           TORCH_HOME=TORCH_HOME, PYTHONUNBUFFERED='1')
 server = subprocess.Popen([sys.executable, '-m', 'app.server', '--local', '--no-browser'], cwd=APP, env=env,
                           stdout=open('/content/stemscore.log', 'w'), stderr=subprocess.STDOUT)
 for _ in range(180):
@@ -69,10 +121,12 @@ for _ in range(180):
 
 import torch
 gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
-key = open(ROOT + '/data/access_key.txt', encoding='utf-8').read().strip()
+key = open(DATA + '/access_key.txt', encoding='utf-8').read().strip()
 # Colab 標準のポート公開機能 (このブラウザでログイン中の Google アカウントだけが開ける URL)
 url = eval_js('google.colab.kernel.proxyPort(8765)').rstrip('/')
 link = f'{url}/?key={key}'
+note = ('処理結果はドライブの「StemScore/data」に保存されます。' if MODE == 'mount' else
+        '⚠ API 方式で接続しています。処理結果は Colab を止めると消えるので、必要なものはダウンロードしてください。')
 display(HTML(f"""
 <div style="font:16px/1.6 sans-serif;padding:16px;border-radius:12px;background:#6c5ce7;color:#fff;max-width:560px">
   <div style="font-size:20px;font-weight:700">🎵 StemScore が起動しました</div>
@@ -81,10 +135,11 @@ display(HTML(f"""
   <div style="font-size:13px;opacity:.9">
     処理: {'GPU (' + gpu + ')' if gpu else 'CPU（GPU が使えないため時間がかかります）'}<br>
     このタブ（Colab）は開いたままにしてください。閉じたりしばらく操作しないと停止します。<br>
-    曲はドライブの「曲」フォルダに入れて、StemScore の「Drive」タブから選べます。
+    曲はドライブの「{INBOX_NAME}」フォルダに入れて、StemScore の「Drive」タブから選べます。<br>
+    {note}
   </div>
 </div>"""))
-'''
+'''.replace("__REPO__", REPO)
 
 # 「すべてのセルを実行」で起動直後に止まらないよう、チェックを入れたときだけ停止する
 STOP_CODE = r'''#@title ■ 停止（使い終わったら、チェックを入れてこのセルの ▶ を押す）
@@ -104,7 +159,8 @@ INTRO = """# StemScore（クラウド版）
 2. 下の **▶ StemScore を起動** を押す（Google ドライブへのアクセス許可を求められたら許可）
 3. 表示される **「StemScore を開く」** を押す
 
-- このタブは開いたままにしてください（閉じたり長時間操作しないと Colab が停止します。処理結果はドライブに残ります）
+- 毎回 GitHub から最新版を取得するので、アプリの更新作業は不要です
+- このタブは開いたままにしてください（閉じたり長時間操作しないと Colab が停止します）
 - 曲はスマホなどから Google ドライブの **「曲」** フォルダに入れると、StemScore の「Drive」タブから選べます
 - 処理結果はドライブの「StemScore/data」に保存されます
 """
@@ -132,24 +188,10 @@ def build_notebook() -> dict:
     }
 
 
-def build_zip(path: Path) -> int:
-    n = 0
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for f in sorted((ROOT / "app").rglob("*")):
-            if f.is_file() and "__pycache__" not in f.parts:
-                z.write(f, f.relative_to(ROOT).as_posix())
-                n += 1
-        z.write(ROOT / "requirements-colab.txt", "requirements-colab.txt")
-    return n + 1
-
-
 def main():
     DIST.mkdir(exist_ok=True)
-    zp = DIST / "StemScore_cloud.zip"
-    n = build_zip(zp)
     nb = DIST / "StemScore_クラウド起動.ipynb"
-    nb.write_text(json.dumps(build_notebook(), ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"{zp} ({n} files, {zp.stat().st_size // 1024} KB)")
+    nb.write_text(json.dumps(build_notebook(), ensure_ascii=False), encoding="utf-8")
     print(nb)
 
 
