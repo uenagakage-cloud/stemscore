@@ -311,6 +311,8 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
 .member-list li small { color: var(--muted); }
 .me-chip { font-size: 12px; color: var(--muted); }
 .owner-tag { font-size: 10px; padding: 0 6px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+#jobTitle { cursor: pointer; }
+#jobTitle:hover { text-decoration: underline dotted; }
 .key-ctl { gap: 6px; }
 .key-ctl b { color: var(--accent); font-size: 13px; min-width: 70px; }
 .key-ctl.busy { opacity: .5; pointer-events: none; }

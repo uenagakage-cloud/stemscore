@@ -305,6 +305,17 @@ function renderHead() {
   $("#splitBtn").hidden = !(j.status === "done" && j.stems?.vocals && !j.stems?.lead && S.cfg?.karaoke?.installed);
 }
 
+$("#jobTitle").onclick = async () => {
+  if (!S.job) return;
+  const v = prompt("曲名", S.job.title);
+  if (!v || v.trim() === S.job.title) return;
+  const fd = new FormData(); fd.append("value", v.trim());
+  try {
+    await api(`/api/jobs/${S.job.id}/title`, { method: "POST", body: fd });
+    S.job.title = v.trim(); renderHead(); $("#miniTitle").textContent = S.job.title; refreshList();
+  } catch (e) { toast(e.message); }
+};
+
 $("#delBtn").onclick = async () => {
   if (!S.job || !confirm(`「${S.job.title}」を削除しますか？`)) return;
   await api(`/api/jobs/${S.job.id}`, { method: "DELETE" });

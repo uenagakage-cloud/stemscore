@@ -524,6 +524,17 @@ def job_file(jid: str, name: str, download: bool = False, pitch: int = 0, count:
     raise HTTPException(404)
 
 
+@app.post("/api/jobs/{jid}/title")
+def set_title(jid: str, value: str = Form(...)):
+    """曲名を変える (画面に表示する名前と、ダウンロードするファイル名に使う)。"""
+    _job_or_404(jid)
+    value = value.strip()[:80]
+    if not value:
+        raise HTTPException(400, "曲名を入力してください")
+    jobs.update(jid, title=value)
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{jid}/pitch")
 def set_pitch(jid: str, value: int = 0):
     """曲のキー (半音) をサーバーに保存する (別の端末で開いても同じキーになる)。"""
