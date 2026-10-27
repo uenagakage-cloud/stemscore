@@ -478,15 +478,43 @@ def _pitch_ok(pitch: int) -> int:
     return pitch
 
 
+# ダウンロードするときのパート名 (ファイル名に使う)
+PART_NAMES = {"karaoke": "カラオケ", "instrumental": "伴奏", "lead": "メインボーカル", "backing": "コーラス",
+              "vocals": "ボーカル", "drums": "ドラム", "bass": "ベース", "other": "その他",
+              "guitar": "ギター", "piano": "ピアノ"}
+
+
+def _export(jid: str, job: dict, name: str, pitch: int, count: bool) -> Path:
+    """キー変更 (pitch) と、歌いだし前のハイハットのカウント (count) を反映した WAV。"""
+    from . import karaoke
+    d = jobs.job_dir(jid) / "stems"
+    base = _pitched(jid, name, pitch, ".wav") if pitch else d / f"{name}.wav"
+    if not base.exists():
+        raise HTTPException(404)
+    if not count:
+        return base
+    out = d / "export" / f"{name}_k{pitch:+d}_count.wav"
+    with _file_lock(str(out)):
+        if not out.exists():
+            voice = d / "lead.wav" if (d / "lead.wav").exists() else d / "vocals.wav"
+            a = job.get("analysis") or {}
+            v0 = karaoke.vocal_start(voice) if voice.exists() else None
+            pre, hits, _ = karaoke.count_in_plan(a, v0 if v0 is not None else a.get("first_beat", 0.0))
+            karaoke.render(base, out, pre, hits)
+    return out
+
+
 @app.get("/api/jobs/{jid}/file/{name}")
-def job_file(jid: str, name: str, download: bool = False, pitch: int = 0):
+def job_file(jid: str, name: str, download: bool = False, pitch: int = 0, count: bool = False):
     job = _job_or_404(jid)
     if not re.fullmatch(r"[\w.]+", name):
         raise HTTPException(404)
-    if _pitch_ok(pitch) and name.endswith(".wav"):
-        # キーを変えた音声 (カラオケ練習用など)
-        f = _pitched(jid, name[:-4], pitch, ".wav")
-        label = f"{_safe(job['title'])}_{name[:-4]}_key{pitch:+d}.wav"
+    if (_pitch_ok(pitch) or count) and name.endswith(".wav"):
+        # キーを変えた / カウントを入れた音声 (カラオケ練習用)
+        stem = name[:-4]
+        f = _export(jid, job, stem, pitch, count)
+        label = (f"{_safe(job['title'])}_{PART_NAMES.get(stem, stem)}"
+                 f"{'_key' + format(pitch, '+d') if pitch else ''}{'_カウント付き' if count else ''}.wav")
         return FileResponse(f, headers={"Content-Disposition": _disp(label)} if download else {})
     for sub in ("stems", "parts", ""):
         f = jobs.job_dir(jid) / sub / name
@@ -494,6 +522,14 @@ def job_file(jid: str, name: str, download: bool = False, pitch: int = 0):
             headers = {"Content-Disposition": _disp(f"{_safe(job['title'])}_{name}")} if download else {}
             return FileResponse(f, headers=headers)
     raise HTTPException(404)
+
+
+@app.post("/api/jobs/{jid}/pitch")
+def set_pitch(jid: str, value: int = 0):
+    """曲のキー (半音) をサーバーに保存する (別の端末で開いても同じキーになる)。"""
+    _job_or_404(jid)
+    jobs.update(jid, pitch=max(-6, min(6, value)))
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{jid}/stream/{name}")

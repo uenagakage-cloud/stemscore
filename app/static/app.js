@@ -320,7 +320,8 @@ $("#retryBtn").onclick = async () => {
 
 function buildDone() {
   $("#playerCard").hidden = false;
-  S.pitch = store.get(`pitch:${S.job.id}`, 0);   // 曲ごとに前回のキーを復元
+  // 曲ごとのキー: この端末で選んだもの → サーバーに保存されたもの の順に使う
+  S.pitch = store.get(`pitch:${S.job.id}`, S.job.pitch ?? 0);
   Player.load(S.job);
   updateKeyUI();
   renderHead();
@@ -643,7 +644,11 @@ function updateKeyUI() {
   $$(".track a.dl").forEach((a) => (a.href = `/api/jobs/${S.job.id}/file/${a.dataset.file}?download=1${q}`));
   // メインボーカル分離済みならコーラス入りのカラオケ音源、まだならボーカルを全部除いた伴奏
   const kara = S.job.stems?.lead ? "karaoke" : "instrumental";
-  $("#karaokeDl").href = `/api/jobs/${S.job.id}/file/${kara}.wav?download=1${q}`;
+  const c = $("#countIn").checked ? "&count=1" : "";
+  $("#karaokeDl").href = `/api/jobs/${S.job.id}/file/${kara}.wav?download=1${q}${c}`;
+  const voice = S.job.stems?.lead ? "lead" : "vocals";
+  $("#vocalDl").href = `/api/jobs/${S.job.id}/file/${voice}.wav?download=1${q}${c}`;
+  $("#vocalDl").textContent = S.job.stems?.lead ? "⬇ メインボーカル" : "⬇ ボーカル";
   $("#karaokeDl").textContent = S.job.stems?.lead ? "⬇ カラオケ音源（コーラス入り）" : "⬇ 伴奏（ボーカルなし）";
 }
 async function setPitch(n) {
@@ -654,6 +659,7 @@ async function setPitch(n) {
   Player.pause();
   S.pitch = n;
   store.set(`pitch:${S.job.id}`, n);
+  api(`/api/jobs/${S.job.id}/pitch?value=${n}`, { method: "POST" }).catch(() => {});
   updateKeyUI();
   renderHead();
   setTranspose(n);   // 楽譜も同じだけ移調する
@@ -671,6 +677,7 @@ async function setPitch(n) {
   if (wasPlaying) Player.play();
 }
 $("#kUp").onclick = () => setPitch(S.pitch + 1);
+$("#countIn").onchange = () => { store.set("countIn", $("#countIn").checked); updateKeyUI(); };
 $("#kDown").onclick = () => setPitch(S.pitch - 1);
 
 // ───────── コード表示 ─────────
@@ -1169,6 +1176,7 @@ $("#resetKeyBtn").onclick = async () => {
   if (isMobile()) { $("#zoom").value = 0.6; }
   const nn = store.get("noteNames", "letter");
   $("#noteNames").value = ["letter", "letter_oct", ""].includes(nn) ? nn : "letter";
+  $("#countIn").checked = store.get("countIn", true);
   $("#colorNotes").checked = store.get("colorNotes", true);
   setTab("add");
   api("/api/me").then((me) => {
