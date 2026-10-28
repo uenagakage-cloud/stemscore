@@ -334,3 +334,7 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
   body[data-tab="list"] #modelCard, body[data-tab="song"] #modelCard { display: none; }
   #modelLinks { font-size: 16px; }
 }
+
+/* スマホだけに出す案内 */
+.mob-only { display: none; }
+@media (max-width: 900px) { .mob-only { display: block; } }

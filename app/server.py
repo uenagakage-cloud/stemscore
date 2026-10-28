@@ -52,6 +52,7 @@ def _file_lock(key: str):
 
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/share", response_class=HTMLResponse)   # スマホの「共有」から URL を受け取る (app.js が処理を始める)
 def index():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     # 更新後に古い JS/CSS がキャッシュから使われないよう、更新時刻をバージョンとして付ける
@@ -67,6 +68,9 @@ def manifest():
         "name": "StemScore", "short_name": "StemScore", "start_url": "/", "scope": "/",
         "display": "standalone", "background_color": "#121219", "theme_color": "#6c5ce7",
         "lang": "ja", "description": "楽器別の音源分離と自動採譜",
+        # YouTube アプリなどの「共有」メニューに StemScore を出す (Android・ホーム画面に追加したとき)
+        "share_target": {"action": "/share", "method": "GET",
+                         "params": {"title": "title", "text": "text", "url": "url"}},
         "icons": [
             {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
             {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
@@ -91,9 +95,11 @@ def _require_admin():
 def _base_urls(request: Request) -> list[str]:
     """他の端末から開くときの URL。クラウドならアクセス中の URL、PC なら同じ Wi-Fi 用の IP。"""
     from . import config
+    from . import tunnel
     if config.CLOUD:
         return [str(request.base_url).rstrip("/")]
-    return [f"http://{ip}:{PORT}" for ip in remote.lan_ips()]
+    lan = [f"http://{ip}:{PORT}" for ip in remote.lan_ips()]
+    return ([tunnel.url] if tunnel.url else []) + lan
 
 
 def _invite(base: str, key: str) -> dict:
@@ -601,6 +607,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--local", action="store_true", help="この PC からのみアクセス可能にする")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--tunnel", action="store_true", help="自宅で、スマホのモバイル回線からも使えるようにする")
     args = ap.parse_args()
     import sys
     for stream in (sys.stdout, sys.stderr):
@@ -623,6 +630,21 @@ def main():
                 print(remote.qr_terminal(f"http://{ips[0]}:{PORT}/?key={key}"))
             except Exception:  # noqa: BLE001
                 print("  (QR コードは PC のブラウザ画面の「スマホで開く」から表示できます)")
+    if args.tunnel and app.state.lan:
+        from . import tunnel
+        from .source import configure_proxy
+        configure_proxy()
+
+        def ready(u):
+            link = f"{u}/?key={remote.access_key()}"
+            print(f"\n  ★ どこからでも (モバイル回線OK): {link}")
+            print("    (この URL は起動のたびに変わります。スマホのカメラで読み取ってください)")
+            try:
+                print(remote.qr_terminal(link))
+            except Exception:  # noqa: BLE001
+                pass
+        if tunnel.start(PORT, ready):
+            print("  トンネルを準備中… (数秒〜数十秒で URL が表示されます)")
     print("  終了するには Ctrl+C\n")
     if not args.no_browser:
         threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}")).start()

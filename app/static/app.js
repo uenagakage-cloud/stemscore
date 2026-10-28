@@ -146,6 +146,26 @@ $("#jobForm").onsubmit = async (e) => {
   finally { btn.disabled = false; btn.textContent = "分離と採譜を開始"; }
 };
 
+// スマホは「URL を貼るだけ」で開始する
+const findUrl = (s) => (s || "").match(/https?:\/\/\S+/)?.[0] || "";
+function startFromUrl(u) {
+  $$("#srcSeg button")[0].click();
+  $("#urlInput").value = u;
+  $("#jobForm").requestSubmit();
+}
+$("#urlInput").addEventListener("paste", () => setTimeout(() => {
+  const u = findUrl($("#urlInput").value);
+  if (u && isMobile()) startFromUrl(u);
+}, 0));
+// YouTube アプリなどの「共有 → StemScore」から開かれたとき
+addEventListener("load", () => {
+  if (location.pathname !== "/share") return;
+  const q = new URLSearchParams(location.search);
+  const u = findUrl(q.get("url")) || findUrl(q.get("text")) || findUrl(q.get("title"));
+  history.replaceState(null, "", "/");
+  if (u) startFromUrl(u); else toast("共有された内容に URL が見つかりませんでした", 5000);
+});
+
 // XHR で送信してアップロードの進み具合を表示 (スマホから大きな動画を送る場合など)
 function uploadForm(fd) {
   return new Promise((resolve, reject) => {

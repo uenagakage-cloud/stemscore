@@ -122,6 +122,9 @@ def is_local(request: Request) -> bool:
     # クラウド公開時はトンネル経由のアクセスも 127.0.0.1 から届くため、常にキーを要求する
     if config.CLOUD:
         return False
+    # 自宅のトンネル (cloudflared) 経由も 127.0.0.1 から届く。転送ヘッダーが付いていれば外からのアクセス
+    if any(h in request.headers for h in ("cf-connecting-ip", "x-forwarded-for", "forwarded")):
+        return False
     return (request.client.host if request.client else "") in LOCAL_HOSTS
 
 
