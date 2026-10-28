@@ -508,7 +508,7 @@ const Player = {
     drawChordLane(t);
     updateChordNow(t);
     if (S.view === "roll" && !$("#partsCard").hidden) Roll.draw(t);
-    if (S.view === "score" && !$("#partsCard").hidden) ScoreCursor.update(t);
+    if (isScoreView() && !$("#partsCard").hidden) ScoreCursor.update(t);
     $("#scoreTime").textContent = `${fmt(t)} / ${fmt(this.dur)}`;
   },
 
@@ -824,6 +824,7 @@ async function selectPart(part) {
   $("#partInfo").innerHTML = chips.join("");
   $("#reBtn").disabled = part === "__full"; $("#reBtn").style.opacity = part === "__full" ? 0.4 : 1;
   applyPlayMode();
+  updateTabButton();
   updateDownloads();
   refreshView();
 }
@@ -914,7 +915,7 @@ addEventListener("resize", () => setTimeout(() => ScoreCursor.build(), 300));
 
 function scoreQuery(extra = "") {
   const parts = S.part === "__full" ? "" : S.part;
-  return `parts=${parts}&transpose=${S.transpose}&division=${$("#division").value}&chords=${$("#chordSyms").checked}&names=${$("#noteNames").value}${extra}`;
+  return `parts=${parts}&transpose=${S.transpose}&division=${$("#division").value}&chords=${$("#chordSyms").checked}&names=${$("#noteNames").value}&tab=${S.view === "tab"}${extra}`;
 }
 function updateDownloads() {
   if (!S.job || !S.part) return;
@@ -922,10 +923,22 @@ function updateDownloads() {
   $("#midBtn").href = `/api/jobs/${S.job.id}/midi?parts=${S.part === "__full" ? "" : S.part}&transpose=${S.transpose}`;
 }
 
+// TAB 譜は楽譜表示の一種 (同じ画面に五線譜 + TAB 譜を出す)
+const TAB_PARTS = ["guitar", "bass", "other"];
+const isScoreView = () => S.view === "score" || S.view === "tab";
+function updateTabButton() {
+  const names = S.part === "__full" ? Object.keys(S.job?.parts || {}) : [S.part];
+  const ok = names.some((n) => TAB_PARTS.includes(n));
+  $("#tabViewBtn").hidden = !ok;
+  if (!ok && S.view === "tab") {
+    S.view = "score";
+    $$("#viewSeg button").forEach((x) => x.classList.toggle("on", x.dataset.view === "score"));
+  }
+}
 function refreshView() {
-  $("#scoreBox").hidden = S.view !== "score";
+  $("#scoreBox").hidden = !isScoreView();
   $("#rollBox").hidden = S.view !== "roll";
-  if (S.view === "score") renderScore(); else Roll.draw(Player.time);
+  if (isScoreView()) renderScore(); else Roll.draw(Player.time);
 }
 
 async function renderScore() {
@@ -963,6 +976,7 @@ async function renderScore() {
 $$("#viewSeg button").forEach((b) => (b.onclick = () => {
   S.view = b.dataset.view;
   $$("#viewSeg button").forEach((x) => x.classList.toggle("on", x === b));
+  updateDownloads();
   refreshView();
 }));
 function setTranspose(v, fromPreset = false) {
@@ -983,7 +997,7 @@ $("#chordSyms").onchange = () => { updateDownloads(); refreshView(); };
 $("#noteNames").onchange = () => { store.set("noteNames", $("#noteNames").value); updateDownloads(); refreshView(); };
 $("#colorNotes").onchange = () => { store.set("colorNotes", $("#colorNotes").checked); S.osmd = null; $("#osmd").innerHTML = ""; refreshView(); };
 $("#zoom").oninput = () => {
-  if (S.view === "score" && S.osmd?.IsReadyToRender?.() !== false && S.osmd) {
+  if (isScoreView() && S.osmd?.IsReadyToRender?.() !== false && S.osmd) {
     S.osmd.zoom = +$("#zoom").value;
     try { S.osmd.render(); ScoreCursor.build(); } catch {}
   } else Roll.draw(Player.time);
@@ -1001,7 +1015,7 @@ $("#reBtn").onclick = async () => {
   finally { btn.disabled = false; btn.textContent = "このパートを再採譜"; }
 };
 $("#printBtn").onclick = () => {
-  if (S.view !== "score") $$("#viewSeg button")[0].click();
+  if (!isScoreView()) $$("#viewSeg button")[0].click();
   setTimeout(() => print(), 300);
 };
 $("#monitor").onchange = () => { Player.schedCursor = Player.time; Synth.stopAll(); };

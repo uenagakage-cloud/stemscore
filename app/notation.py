@@ -167,8 +167,10 @@ def _build_drums(notes, grid, names=None):
 
 
 def build_score(parts: list[tuple[str, list[dict]]], analysis: dict, title: str,
-                transpose: int = 0, division: int = 4, chords: bool = True, label_mode: str | None = None) -> str:
-    """parts: [(パート名, ノート列)] → MusicXML 文字列。"""
+                transpose: int = 0, division: int = 4, chords: bool = True, label_mode: str | None = None,
+                tab: bool = False) -> str:
+    """parts: [(パート名, ノート列)] → MusicXML 文字列。tab=True ならギター/ベースに TAB 譜を付ける。"""
+    from . import tab as tabmod
     bpm = analysis.get("bpm") or 120
     grid = Grid(bpm, analysis.get("downbeat", analysis.get("first_beat", 0.0)), division)
     k = analysis.get("key") or {"tonic": 0, "mode": "major"}
@@ -202,6 +204,11 @@ def build_score(parts: list[tuple[str, list[dict]]], analysis: dict, title: str,
                 built = [_build_pitched(tn, grid, flats, label, c, names=label_mode)]
             for b in built:
                 b.insert(0, ksig.__deepcopy__())
+            # TAB 譜 (五線譜の下に並べる。キー変更後の音で弦とフレットを決める)
+            if tab and name in tabmod.TAB_PARTS:
+                kind = tabmod.TAB_PARTS[name]
+                built.append(tabmod.build_tab_part(_events(tn, grid), kind,
+                                                   f"{'Bass' if kind == 'bass' else 'Guitar'} TAB"))
         for i, b in enumerate(built):
             b.insert(0, meter.TimeSignature("4/4"))
             if not score.parts:
@@ -222,6 +229,8 @@ def build_score(parts: list[tuple[str, list[dict]]], analysis: dict, title: str,
             score.insert(0, b)
         if name == "piano" and len(built) == 2:
             score.insert(0, layout.StaffGroup(built, name="Piano", abbreviation="Pno.", symbol="brace"))
+        elif len(built) == 2:   # 五線譜 + TAB 譜をかっこでまとめる
+            score.insert(0, layout.StaffGroup(built, symbol="bracket"))
 
     end = max((p.highestTime for p in score.parts), default=4.0)
     for p in score.parts:
@@ -231,4 +240,5 @@ def build_score(parts: list[tuple[str, list[dict]]], analysis: dict, title: str,
             r = note.Rest(quarterLength=end - p.highestTime)
             p.append(r)
     made = score.makeNotation()
-    return GeneralObjectExporter(made).parse().decode("utf-8")
+    xml = GeneralObjectExporter(made).parse().decode("utf-8")
+    return tabmod.add_staff_details(xml) if tab else xml

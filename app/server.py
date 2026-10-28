@@ -409,7 +409,7 @@ def _parts(job: dict, parts: str) -> list[tuple[str, list[dict]]]:
 
 @app.get("/api/jobs/{jid}/score")
 def score(jid: str, parts: str = "", transpose: int = 0, division: int = 4, chords: bool = True,
-          names: str = "",
+          names: str = "", tab: bool = False,
           download: bool = False):
     from .notation import build_score
 
@@ -420,11 +420,11 @@ def score(jid: str, parts: str = "", transpose: int = 0, division: int = 4, chor
     names = names if names in ("letter", "letter_oct") else ""
     cache_dir = jobs.job_dir(jid) / "scores"
     cache_dir.mkdir(exist_ok=True)
-    name = f"{'-'.join(n for n, _ in sel)}_t{transpose}_d{division}_c{int(chords)}_n{names}.musicxml"
+    name = f"{'-'.join(n for n, _ in sel)}_t{transpose}_d{division}_c{int(chords)}_n{names}{'_tab' if tab else ''}.musicxml"
     f = cache_dir / name
     if not f.exists():
         xml = build_score(sel, job["analysis"], job["title"], transpose, division, chords,
-                          names or None)
+                          names or None, tab)
         f.write_text(xml, encoding="utf-8")
     headers = {}
     if download:
