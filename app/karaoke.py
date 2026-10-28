@@ -52,6 +52,9 @@ def count_in_plan(analysis: dict, v0: float) -> tuple[float, list[float], float]
         anchor = float(beats[np.argmin(np.abs(beats - v0))]) if len(beats) else v0
     # 歌いだしより前にある、拍の位置の中で一番遅いもの = カウントの最後 (4 拍目)
     last = anchor + math.floor((v0 - 0.08 - anchor) / beat) * beat
+    # 歌いだしの検出は少し遅れて出るので、歌いだしが拍のすぐ後なら、その拍で歌い始めたとみなして 1 拍前で終える
+    if v0 - last < 0.3 * beat:
+        last -= beat
     hits = [last - (COUNT_BEATS - 1 - i) * beat for i in range(COUNT_BEATS)]
     pre = 0.0
     if hits[0] < 0.05:   # 曲の頭に余裕がなければ、拍単位で無音を足す
