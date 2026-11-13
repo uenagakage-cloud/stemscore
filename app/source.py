@@ -125,6 +125,10 @@ def download_url(url: str, workdir: Path, log) -> tuple[Path, str]:
         "no_warnings": True,
         "ffmpeg_location": FFMPEG,
     }
+    # YouTube の解析には JavaScript の実行環境が必要 (無いと一部の動画で失敗する)。Node.js があれば使う
+    import shutil
+    if shutil.which("node"):
+        opts["js_runtimes"] = {"node": {}}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target, download=True)
